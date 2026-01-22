@@ -51,8 +51,9 @@ class PersonaFineTuner:
     # -------------------------
     # TRAINING
     # -------------------------
-    def train(self, train_path, base_model, method="supervised", val_path=None, suffix=None, n_epochs=None,
-              extra_method_config=None, timeout_sec=6*60*60, print_events=True):
+    def train(self, train_path: str, base_model: str, method: str = "supervised",  # "supervised" or "dpo"
+            val_path: Optional[str] = None, suffix: Optional[str] = None, n_epochs: Optional[int] = None,
+            extra_method_config: Optional[Dict[str, Any]] = None) -> str:
         """
         Creates a fine-tuning job and waits for completion.
 
@@ -72,10 +73,6 @@ class PersonaFineTuner:
             For supervised jobs, you can set epochs via method.supervised.hyperparameters.n_epochs. :contentReference[oaicite:4]{index=4}
         extra_method_config : Optional[dict]
             Extra method config merged into the request (e.g., DPO hyperparameters).
-        timeout_sec : int
-            Max time to wait.
-        print_events : bool
-            If True, prints new fine-tuning events while polling.
 
         Returns
         -------
@@ -128,7 +125,15 @@ class PersonaFineTuner:
         start = time.time()
         seen_event_ids = set()
 
+        '''
+        timeout_sec : int
+            Max time to wait.
+        print_events : bool
+            If True, prints new fine-tuning events while polling.
+        '''
         poll_interval_sec = 30
+        timeout_sec = 6 * 60 * 60
+        print_events = True
         while True:
             if time.time() - start > timeout_sec:
                 raise RuntimeError(f"Fine-tuning job {job_id} timed out after {timeout_sec} seconds")
@@ -169,17 +174,9 @@ class PersonaFineTuner:
     # -------------------------
     # INFERENCE
     # -------------------------
-    def infer(
-        self,
-        model: str,
-        person_id: str,
-        meta: Dict[str, Any],
-        question: str,
-        system_prompt: Optional[str] = None,
-        context: Optional[str] = None,
-        max_output_tokens: int = 400,
-        temperature: float = 0.7,
-    ) -> str:
+    def infer(self, model: str, person_id: str, meta: Dict[str, Any], question: str,
+              system_prompt: Optional[str] = None, context: Optional[str] = None,
+              max_output_tokens: int = 400, temperature: float = 0.7) -> str:
         """
         Runs inference with your fine-tuned model using the Responses API.
 
