@@ -41,7 +41,7 @@ from control_panel import ControlPanel
 controller = ControlPanel()
 
 with open(controller.api_key_path, 'r') as f:
-    api_key = f.read()
+    api_key = f.read().strip()
 
 
 class PersonaFineTuner:

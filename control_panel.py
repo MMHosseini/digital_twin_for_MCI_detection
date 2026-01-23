@@ -13,7 +13,7 @@ class ControlPanel:
     language_model_direct_preference_optimization_validation_path = os.path.join(data_path, 'direct_preference_optimization_validation_set.jsonl')
 
     tasks = {
-        'create_jsonl_for_supervised_fine_tuning': 1,
+        'create_jsonl_for_supervised_fine_tuning': 0,
         'create_jsonl_for_direct_preference_optimization': 0,
         'fine_tune_language_model': 0,
     }
