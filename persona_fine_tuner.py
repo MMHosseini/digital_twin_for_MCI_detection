@@ -40,18 +40,42 @@ from control_panel import ControlPanel
 
 controller = ControlPanel()
 
-with open(controller.api_key_path, 'r') as f:
-    api_key = f.read().strip()
-
 
 class PersonaFineTuner:
     def __init__(self):
+        with open(controller.api_key_path, 'r') as f:
+            api_key = f.read().strip()
         self.client = OpenAI(api_key=api_key)
+
+    def supervised_fine_tuning(self):
+        sft_model = self._train(base_model="gpt-4.1-mini-2025-04-14", method="supervised", n_epochs=5,
+                               train_path=controller.language_model_supervised_fine_tune_train_path)
+        supervised_fine_tuned_model_name = controller.supervised_fine_tuned_model_name
+        with open(supervised_fine_tuned_model_name, 'w') as f:
+            f.write(sft_model)
+
+    def dpo_fine_tuning(self):
+        supervised_fine_tuned_model_name = controller.supervised_fine_tuned_model_name
+        with open(supervised_fine_tuned_model_name, 'w') as f:
+            sft_model = f.read()
+        dpo_model = self._train(base_model = sft_model, method = "dpo", n_epochs = 5,
+                               train_path=controller.language_model_direct_preference_optimization_train_path)
+        dpo_fine_tuned_model_name = controller.dpo_fine_tuned_model_name
+        with open(dpo_fine_tuned_model_name, 'w') as f:
+            f.write(dpo_model)
+
+    def infer_fine_tuned_model(self): # change it later to work on validation set
+        dpo_fine_tuned_model_name = controller.dpo_fine_tuned_model_name
+        with open(dpo_fine_tuned_model_name, 'w') as f:
+            dpo_model = f.read()
+        out = self._infer(model=dpo_model, person_id="C1052", meta={"age": 77.5, "gender": "Male"},
+              question="How do you usually handle stress?")
+        print(out)
 
     # -------------------------
     # TRAINING
     # -------------------------
-    def train(self, train_path: str, base_model: str, method: str = "supervised",  # "supervised" or "dpo"
+    def _train(self, train_path: str, base_model: str, method: str = "supervised",  # "supervised" or "dpo"
             val_path: Optional[str] = None, suffix: Optional[str] = None, n_epochs: Optional[int] = None,
             extra_method_config: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -174,7 +198,7 @@ class PersonaFineTuner:
     # -------------------------
     # INFERENCE
     # -------------------------
-    def infer(self, model: str, person_id: str, meta: Dict[str, Any], question: str,
+    def _infer(self, model: str, person_id: str, meta: Dict[str, Any], question: str,
               system_prompt: Optional[str] = None, context: Optional[str] = None,
               max_output_tokens: int = 400, temperature: float = 0.7) -> str:
         """
