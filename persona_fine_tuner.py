@@ -34,6 +34,7 @@ Usage:
 """
 
 import time
+import json
 from typing import Any, Dict, Optional
 from openai import OpenAI
 from control_panel import ControlPanel
@@ -48,29 +49,62 @@ class PersonaFineTuner:
         self.client = OpenAI(api_key=api_key)
 
     def supervised_fine_tuning(self):
-        sft_model = self._train(base_model="gpt-4.1-mini-2025-04-14", method="supervised", n_epochs=5,
+        sft_model_name = self._train(base_model="gpt-4.1-mini-2025-04-14", method="supervised", n_epochs=3,
                                train_path=controller.language_model_supervised_fine_tune_train_path)
         supervised_fine_tuned_model_name = controller.supervised_fine_tuned_model_name
         with open(supervised_fine_tuned_model_name, 'w') as f:
-            f.write(sft_model)
+            f.write(sft_model_name) # ft:gpt-4.1-mini-2025-04-14:personal::D3p5VSZ7
 
     def dpo_fine_tuning(self):
         supervised_fine_tuned_model_name = controller.supervised_fine_tuned_model_name
-        with open(supervised_fine_tuned_model_name, 'w') as f:
-            sft_model = f.read()
-        dpo_model = self._train(base_model = sft_model, method = "dpo", n_epochs = 5,
+        with open(supervised_fine_tuned_model_name, 'r') as f:
+            sft_model_name = f.read().strip()
+        dpo_model_name = self._train(base_model = sft_model_name, method = "dpo", n_epochs = 2,
                                train_path=controller.language_model_direct_preference_optimization_train_path)
         dpo_fine_tuned_model_name = controller.dpo_fine_tuned_model_name
         with open(dpo_fine_tuned_model_name, 'w') as f:
-            f.write(dpo_model)
+            f.write(dpo_model_name) 
 
-    def infer_fine_tuned_model(self): # change it later to work on validation set
-        dpo_fine_tuned_model_name = controller.dpo_fine_tuned_model_name
-        with open(dpo_fine_tuned_model_name, 'w') as f:
-            dpo_model = f.read()
-        out = self._infer(model=dpo_model, person_id="C1052", meta={"age": 77.5, "gender": "Male"},
-              question="How do you usually handle stress?")
-        print(out)
+    def infer_supervised_fine_tuned_model(self): # change it later to work on validation set
+        # dpo_fine_tuned_model_name = controller.dpo_fine_tuned_model_name
+        dpo_fine_tuned_model_name = controller.supervised_fine_tuned_model_name
+        with open(dpo_fine_tuned_model_name, 'r') as f:
+            dpo_model = f.read().strip()
+        data = []
+        with open(controller.language_model_supervised_fine_tune_train_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    data.append(json.loads(line))
+        for value in data:
+            out = self._infer(model=dpo_model, system_prompt=value['messages'][0]['content'],
+                              user_text=value['messages'][1]['content'],max_output_tokens=400, temperature=0.1)
+            print('Question:', value['messages'][1]['content'])
+            print('Real:', value['messages'][2]['content'])
+            print('Pred:', out)
+
+    def infer_dpo_fine_tuned_model(self): # change it later to work on validation set
+        # dpo_fine_tuned_model_name = controller.dpo_fine_tuned_model_name
+        dpo_fine_tuned_model_name = controller.supervised_fine_tuned_model_name
+        with open(dpo_fine_tuned_model_name, 'r') as f:
+            dpo_model = f.read().strip()
+        data = []
+        with open(controller.language_model_supervised_fine_tune_train_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    data.append(json.loads(line))
+        for value in data:
+            out = self._infer(model=dpo_model, system_prompt=value['messages'][0]['content'],
+                              user_text=value['messages'][1]['content'],max_output_tokens=400, temperature=0.1)
+            print('Question:', value['messages'][1]['content'])
+            print('Real:', value['messages'][2]['content'])
+            print('Pred:', out)
+
+    def evaluate_accuracy_of_supervised_fine_tune_language_model(self):
+        pass
+
+    def evaluate_accuracy_of_dpo_fine_tune_language_model(self):
+        pass
+
 
     # -------------------------
     # TRAINING
@@ -198,45 +232,7 @@ class PersonaFineTuner:
     # -------------------------
     # INFERENCE
     # -------------------------
-    def _infer(self, model: str, person_id: str, meta: Dict[str, Any], question: str,
-              system_prompt: Optional[str] = None, context: Optional[str] = None,
-              max_output_tokens: int = 400, temperature: float = 0.7) -> str:
-        """
-        Runs inference with your fine-tuned model using the Responses API.
-
-        Parameters
-        ----------
-        model : str
-            Fine-tuned model id from train().
-        person_id : str
-            e.g., "P0007"
-        meta : dict
-            e.g., {"age":72,"gender":"F","race":"Asian","moca":23}
-        question : str
-            New question to answer in-persona.
-        system_prompt : Optional[str]
-            Optional override for system behavior. Keep consistent with training.
-        context : Optional[str]
-            Optional short prior dialog context (1–2 turns) if your deployment is conversational.
-        """
-        if system_prompt is None:
-            system_prompt = (
-                "You are simulating the respondent in a research dataset. "
-                "Match the respondent's style (tone, verbosity, hedging, formality). "
-                "Do NOT mention META fields unless the user explicitly asks about them. "
-                "Do NOT invent personal facts; if unknown, answer in-character with uncertainty."
-            )
-
-        # Stable, consistent formatting (match your training format)
-        meta_str = " | ".join(f"{k}={meta[k]}" for k in sorted(meta.keys()))
-        user_parts = []
-        if context:
-            user_parts.append(f"CONTEXT:\n{context}\n")
-        user_parts.append(f"PERSON_ID: {person_id}")
-        user_parts.append(f"META: {meta_str}")
-        user_parts.append(f"QUESTION: {question}")
-        user_text = "\n".join(user_parts)
-
+    def _infer(self, model: str, system_prompt: str, user_text: str, max_output_tokens: int = 400, temperature: float = 0.0) -> str:
         resp = self.client.responses.create(
             model=model,
             input=[

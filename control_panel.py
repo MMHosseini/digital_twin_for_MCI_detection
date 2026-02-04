@@ -17,12 +17,16 @@ class ControlPanel:
     dpo_fine_tuned_model_name = os.path.join(data_path, 'dpo_fine_tuned_model_name.txt')
 
     tasks = {
-        'split_train_validation_sets': 0,
-        'merge_transcripts': 0,
-        'create_jsonl_for_supervised_fine_tuning': 0,
-        'create_jsonl_for_direct_preference_optimization': 0,
-        'supervised_fine_tune_language_model': 1,
-        'dpo_fine_tune_language_model': 0,
-        'inference_fine_tuned_language_model': 0,
+        'split_train_validation_sets': 0, # done
+        'merge_transcripts': 0,  # done
+        'create_jsonl_for_supervised_fine_tuning': 0, # done
+        'create_jsonl_for_direct_preference_optimization': 0, # done
+        'supervised_fine_tune_language_model': 0, # done
+        'dpo_fine_tune_language_model': 0, # maybe later
+        'inference_supervised_fine_tuned_language_model': 0, # not important (for checking)
+        'inference_dpo_fine_tuned_language_model': 0, # not important (for checking)
+        'extract_text_embeddings': 1,
+        'evaluate_accuracy_of_supervised_fine_tune_language_model': 0,
+        'evaluate_accuracy_of_dpo_fine_tune_language_model': 0, # maybe later
     }
 
