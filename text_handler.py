@@ -45,7 +45,6 @@ class TextHandler:
                     participant_transcript_keys = list(participant_transcript.keys())
                     for participant_key in participant_transcript_keys:
                         response = participant_transcript[participant_key]['text']
-                        # response = "Text1 <TEMPO_FAST><PAUSE_MED> Text2 <TEMPO_SLOW><PAUSE_NONE> Text3 <TEMPO_MED><PAUSE_LONG> Text4 <TEMPO_FAST>"
                         sentences = extract_sub_sentences(response)
 
                         sentence_list = []
@@ -59,7 +58,8 @@ class TextHandler:
                         embedding_mean = np.mean(embeddings, axis=0)
                         embedding_max = np.max(embeddings, axis=0)
                         embedding_all = model.encode(answer)
-                        feature_vector = np.concatenate([embedding_mean, embedding_max, embedding_all])
+                        # feature_vector = np.concatenate([embedding_mean, embedding_max, embedding_all])
+                        feature_vector = np.stack([embedding_mean, embedding_max, embedding_all], axis=1)
                         feature_vector = feature_vector.tolist()
 
                         data['participant_transcript'][participant_key]['embedding_text'] = feature_vector
