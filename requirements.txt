@@ -3,3 +3,6 @@ torch
 sentence-transformers
 openai
 numpy
+nltk
+lexicalrichness
+spacy

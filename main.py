@@ -38,6 +38,9 @@ if __name__ == "__main__":
 
     if controller.tasks['extract_text_embeddings'] == 1:
         text_handler.extract_text_embeddings()
+        
+    if controller.tasks['extract_text_features'] == 1:
+        text_handler.extract_text_stylometrics()
 
     if controller.tasks['evaluate_accuracy_of_supervised_fine_tune_language_model'] == 1:
         persona_fine_tuner.evaluate_accuracy_of_supervised_fine_tune_language_model()

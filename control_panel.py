@@ -25,7 +25,8 @@ class ControlPanel:
         'dpo_fine_tune_language_model': 0, # maybe later
         'inference_supervised_fine_tuned_language_model': 0, # not important (for checking)
         'inference_dpo_fine_tuned_language_model': 0, # not important (for checking)
-        'extract_text_embeddings': 1,
+        'extract_text_embeddings': 0, # done
+        'extract_text_features': 1,
         'evaluate_accuracy_of_supervised_fine_tune_language_model': 0,
         'evaluate_accuracy_of_dpo_fine_tune_language_model': 0, # maybe later
     }
