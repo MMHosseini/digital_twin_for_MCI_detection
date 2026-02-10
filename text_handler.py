@@ -1,6 +1,7 @@
 import json
 import os
 import re
+
 import numpy as np
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
@@ -8,12 +9,61 @@ import nltk
 from collections import Counter
 import spacy
 import math
+from openai import OpenAI
 from lexicalrichness import LexicalRichness
 from control_panel import ControlPanel
 
 controller = ControlPanel()
 
 class TextHandler:
+    def correct_transcripts_order(self):
+        def regenerate_transcript(transcripts, transcript_keys, upgrade_or_downgrade):
+            new_transcript = dict()
+            value = 1 if upgrade_or_downgrade == 'upgrade' else -1 if upgrade_or_downgrade == 'downgrade' else 0
+            for transcript_key in transcript_keys:
+                new_transcript_key = str(int(transcript_key)+value)
+                new_transcript[new_transcript_key] = transcripts[transcript_key]
+            return new_transcript
+
+        train_set = controller.train_data_path
+        validation_set = controller.validation_data_path
+        subsets = [train_set, validation_set]
+
+        for subset in subsets:
+            participants = os.listdir(subset)
+            for participant in participants:
+                current_path = os.path.join(subset, participant)
+                transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
+                general_info_path = os.path.join(current_path, 'general_info.json')
+                transcripts_path.remove(str(general_info_path))
+
+                for transcript_path in transcripts_path:
+                    with open(transcript_path, "r", encoding="utf-8") as f2:
+                        data = json.load(f2)
+
+                    participant_transcripts = data['participant_transcript']
+                    moderator_transcripts = data['moderator_transcript']
+                    participant_transcript_keys = list(participant_transcripts.keys())
+                    moderator_transcript_keys = list(moderator_transcripts.keys())
+
+                    if int(moderator_transcript_keys[-1]) > int(participant_transcript_keys[-1]):  # moderator cannot finish chat
+                        del moderator_transcripts[moderator_transcript_keys[-1]]
+                        del moderator_transcript_keys[-1]
+
+                    if participant_transcript_keys[0] == '0': # participant cannot start chat
+                        del participant_transcripts[participant_transcript_keys[0]]
+                        del participant_transcript_keys[0]
+                        participant_transcripts = regenerate_transcript(participant_transcripts, participant_transcript_keys,
+                                                                            upgrade_or_downgrade='downgrade')
+                        moderator_transcripts = regenerate_transcript(moderator_transcripts, moderator_transcript_keys,
+                                                                            upgrade_or_downgrade='downgrade')
+
+                    data['participant_transcript'] = participant_transcripts
+                    data['moderator_transcript'] = moderator_transcripts
+
+                    with open(transcript_path, 'w') as f3:
+                        json.dump(data, f3, indent=4)
+
     def extract_text_embeddings(self):
         def extract_sub_sentences(text):
             pattern = re.compile(r"\s*(.*?)\s*((?:<[^>]+>\s*)+|$)")
@@ -398,8 +448,8 @@ class TextHandler:
                         there_is_non_expected_value = any(not isinstance(x, (int, float)) for x in feature_vector)
                         if there_is_non_expected_value:
                             print('text_stylometrics error: non expected value for participant_key', participant_key, 'in', transcript_path)
-
-                        data['participant_transcript'][participant_key]['stylometric_text'] = feature_vector
+                        else:
+                            data['participant_transcript'][participant_key]['stylometric_text'] = feature_vector
                     with open(transcript_path, 'w') as f2:
                         json.dump(data, f2, indent=4)
 
