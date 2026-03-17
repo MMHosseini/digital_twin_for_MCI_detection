@@ -1,15 +1,28 @@
 import json
 import os
 import re
+from multiprocessing.dummy import current_process
+from datetime import datetime
+from textwrap import indent
 
+import torch
+from sklearn.metrics.cluster import contingency_matrix
+from transformers import AutoTokenizer, AutoModel
 import numpy as np
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 import nltk
+from tqdm import tqdm
 from collections import Counter
 import spacy
 import math
 from openai import OpenAI
+import numpy as np
+import json
+import joblib
+from sentence_transformers import SentenceTransformer
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler, normalize
 from lexicalrichness import LexicalRichness
 from control_panel import ControlPanel
 
@@ -88,34 +101,327 @@ class TextHandler:
                 general_info_path = os.path.join(current_path, 'general_info.json')
                 transcripts_path.remove(str(general_info_path))
 
-                for transcript_path in transcripts_path:
+                for transcript_path in tqdm(transcripts_path):
+                    change_happened = False
                     with open(transcript_path, "r", encoding="utf-8") as f1:
                         data = json.load(f1)
 
-                    participant_transcript = data['participant_transcript']
-                    participant_transcript_keys = list(participant_transcript.keys())
-                    for participant_key in participant_transcript_keys:
-                        response = participant_transcript[participant_key]['text']
-                        sentences = extract_sub_sentences(response)
+                    sources = ['moderator_transcript', 'participant_transcript', 'simulated_transcript_raw_gpt', 'simulated_transcript_sft',
+                               'simulated_transcript_sft_rag', 'simulated_transcript_dpo', 'simulated_transcript_dpo_rag']
+                    for source in sources:
+                        if source not in data:
+                            continue
 
-                        sentence_list = []
-                        answer = ''
-                        for sentence in sentences:
-                            text = sentence['text']
-                            sentence_list.append(text)
-                            answer = answer + text + ' '
-                        answer = answer[:-1]
-                        embeddings = model.encode(sentence_list)
-                        embedding_mean = np.mean(embeddings, axis=0)
-                        embedding_max = np.max(embeddings, axis=0)
-                        embedding_all = model.encode(answer)
-                        # feature_vector = np.concatenate([embedding_mean, embedding_max, embedding_all])
-                        feature_vector = np.stack([embedding_mean, embedding_max, embedding_all], axis=1)
-                        feature_vector = feature_vector.tolist()
+                        transcript = data[source]
+                        transcript_keys = list(transcript.keys())
+                        for key in transcript_keys:
+                            if 'embedding_text' in transcript[key]:
+                                continue
 
-                        data['participant_transcript'][participant_key]['embedding_text'] = feature_vector
-                    with open(transcript_path, 'w') as f2:
-                        json.dump(data, f2, indent=4)
+                            change_happened = True
+                            full_sentence_with_markers = transcript[key]['text']
+                            sentences = extract_sub_sentences(full_sentence_with_markers)
+
+                            sentence_list = []
+                            full_sentence = ''
+                            for sentence in sentences:
+                                text = sentence['text']
+                                sentence_list.append(text)
+                                full_sentence = full_sentence + text + ' '
+                            full_sentence = full_sentence[:-1]
+                            embeddings = model.encode(sentence_list)
+                            embedding_mean = np.mean(embeddings, axis=0)
+                            embedding_max = np.max(embeddings, axis=0)
+                            embedding_all = model.encode(full_sentence)
+                            feature_vector = np.stack([embedding_mean, embedding_max, embedding_all], axis=1)
+                            feature_vector = feature_vector.tolist()
+                            data[source][key]['embedding_text'] = feature_vector
+
+                    if change_happened:
+                        with open(transcript_path, 'w') as f2:
+                            json.dump(data, f2, indent=4)
+
+    def extract_text_sentiments(self):
+        def extract_sub_sentences(text):
+            pattern = re.compile(r"\s*(.*?)\s*((?:<[^>]+>\s*)+|$)")
+            results = []
+            for m in pattern.finditer(text):
+                chunk = m.group(1).strip()
+                tags = m.group(2) or ""
+                if not chunk:
+                    continue
+                tempo = re.search(r"<TEMPO_(\w+)>", tags)
+                pause = re.search(r"<PAUSE_(\w+)>", tags)
+                results.append({"text": chunk, "tempo": tempo.group(1) if tempo else None, "pause": pause.group(1) if pause else None})
+            return results
+
+        def get_sentiment_vector(model, tokenizer, text):
+            inputs = tokenizer(text, return_tensors="pt", truncation=True)
+            outputs = model(**inputs)
+            sentiment_vector = outputs.last_hidden_state[:, 0, :]
+            return sentiment_vector.detach().cpu().numpy().T
+
+        model_name = "distilbert-base-uncased-finetuned-sst-2-english"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModel.from_pretrained(model_name)
+        subsets = [controller.train_data_path, controller.validation_data_path]
+        for subset in subsets:
+            participants = os.listdir(subset)
+            for participant in participants:
+                current_path = os.path.join(subset, participant)
+                transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
+                general_info_path = os.path.join(current_path, 'general_info.json')
+                transcripts_path.remove(str(general_info_path))
+
+                for transcript_path in tqdm(transcripts_path):
+                    change_happened = False
+                    with open(transcript_path, "r", encoding="utf-8") as f1:
+                        data = json.load(f1)
+
+                    sources = ['moderator_transcript', 'participant_transcript', 'simulated_transcript_raw_gpt', 'simulated_transcript_sft',
+                               'simulated_transcript_sft_rag', 'simulated_transcript_dpo', 'simulated_transcript_dpo_rag']
+                    for source in sources:
+                        if source not in data:
+                            continue
+
+                        transcript = data[source]
+                        transcript_keys = list(transcript.keys())
+                        for key in transcript_keys:
+                            if 'sentiment_text' in transcript[key]:
+                                continue
+
+                            change_happened = True
+                            full_sentence_with_markers = transcript[key]['text']
+                            sentences = extract_sub_sentences(full_sentence_with_markers)
+
+                            sentence_list = []
+                            full_sentence = ''
+                            for sentence in sentences:
+                                text = sentence['text']
+                                sentence_list.append(text)
+                                full_sentence = full_sentence + text + ' '
+                            full_sentence = full_sentence[:-1]
+
+                            feature_vectors = []
+                            for text in sentence_list:
+                                sentiment_vector = get_sentiment_vector(model, tokenizer, text)
+                                feature_vectors.append(sentiment_vector)
+
+                            sentiment_mean = np.mean(np.array(feature_vectors), axis=0).squeeze()
+                            sentiment_std = np.std(np.array(feature_vectors), axis=0).squeeze()
+                            sentiment_all = get_sentiment_vector(model, tokenizer, full_sentence).squeeze()
+
+                            feature_vector = np.stack([sentiment_mean, sentiment_std, sentiment_all], axis=1)
+                            feature_vector = feature_vector.tolist()
+                            data[source][key]['sentiment_text'] = feature_vector
+
+                    if change_happened:
+                        with open(transcript_path, 'w') as f2:
+                            json.dump(data, f2, indent=4)
+
+    def extract_title_descriptor(self):
+        subsets = [controller.train_data_path, controller.validation_data_path]
+        topics_list = []
+        transcript_path_list = []
+        for subset in subsets:
+            participants = os.listdir(subset)
+            participants.sort()
+            for participant in participants:
+                current_path = os.path.join(subset, participant)
+                transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
+                general_info_path = os.path.join(current_path, 'general_info.json')
+                transcripts_path.remove(str(general_info_path))
+                for transcript_path in tqdm(transcripts_path):
+                    with open(transcript_path, "r", encoding="utf-8") as f1:
+                        data = json.load(f1)
+                    topics_list.append(data['topic'])
+                    transcript_path_list.append(transcript_path)
+        topics = list(set(s.strip().lower() for s in topics_list))
+
+        # model = SentenceTransformer("all-mpnet-base-v2") # 768
+        model = SentenceTransformer("all-MiniLM-L6-v2") # 384
+        embeddings = model.encode(topics, convert_to_numpy=True)  # (N, d)
+
+        # Standardize (important before PCA)
+        scaler = StandardScaler()
+        X = scaler.fit_transform(embeddings)
+
+        # Fit full PCA
+        max_components = min(X.shape[0], X.shape[1])
+        pca_full = PCA(n_components=max_components, svd_solver="full", random_state=42)
+        X_pca_full = pca_full.fit_transform(X)
+        cumvar = np.cumsum(pca_full.explained_variance_ratio_)
+        target = 0.90
+        valid = np.where(cumvar <= target)[0]
+        k = int(valid[-1] + 1) if len(valid) > 0 else 1
+        energy_preserved = float(cumvar[k - 1])
+        print(f"Selected k: {k}")
+        print(f"Energy preserved: {energy_preserved:.4f} ({energy_preserved * 100:.2f}%)")
+
+        # Keep first k components
+        topic_vectors = X_pca_full[:, :k]
+
+        # Optional normalization (recommended)
+        topic_vectors = normalize(topic_vectors, norm="l2")
+        print("Final descriptor shape:", topic_vectors.shape)
+
+        # Save scaler + PCA (IMPORTANT for future topics)
+        # joblib.dump(scaler, "topic_scaler.pkl")
+        # joblib.dump(pca_full, "topic_pca_full.pkl")
+
+        # Save descriptors
+        for i, topic in enumerate(tqdm(topics)):
+            indices = [j for j, v in enumerate(topics_list) if v.strip().lower() == topic]
+            for index in indices:
+                transcript_path = transcript_path_list[index]
+                with open(transcript_path, 'r') as f2:
+                    data = json.load(f2)
+                data['topic_descriptor'] = topic_vectors[i, :].tolist()
+                with open(transcript_path, 'w') as f3:
+                    json.dump(data, f3, indent=4)
+
+    def prepare_rag_data(self):
+        def read_participant_data(transcripts_path):
+            order_of_interviews = []
+            dates = []
+            questions = []
+            question_vectors = []
+            answers= []
+            answer_vectors = []
+            jsons_path = []
+            keys = []
+
+
+            for transcript_path in transcripts_path:
+                with open(transcript_path, "r", encoding="utf-8") as f1:
+                    data = json.load(f1)
+
+                order_of_interview = data['order_of_interview']
+                date = datetime.strptime(data['date'], "%Y-%m-%d").date()
+                moderator_transcript = data['moderator_transcript']
+                participant_transcript = data['participant_transcript']
+                moderator_transcript_keys = moderator_transcript.keys()
+
+                for moderator_key in moderator_transcript_keys:
+                    participant_key = str(int(moderator_key) + 1)
+                    question = moderator_transcript[moderator_key]['text']
+                    question_vector = np.array(moderator_transcript[moderator_key]['embedding_text'])[:, :].reshape(-1, order="F")
+                    answer = participant_transcript[participant_key]['text']
+                    answer_vector = np.array(participant_transcript[participant_key]['embedding_text'])[:, :].reshape(-1, order="F")
+
+                    order_of_interviews.append(order_of_interview)
+                    dates.append(date)
+                    questions.append(question)
+                    question_vectors.append(question_vector)
+                    answers.append(answer)
+                    answer_vectors.append(answer_vector)
+                    jsons_path.append(transcript_path)
+                    keys.append(participant_key)
+
+            dates = np.array(dates)
+            questions = np.array(questions)
+            question_vectors = np.array(question_vectors).T
+            answers = np.array(answers)
+            jsons_path = np.array(jsons_path)
+            keys = np.array(keys)
+
+            data = {"dates": dates, "questions": questions, "question_vectors": question_vectors,
+                    "answers": answers, 'jsons_path': jsons_path, 'keys': keys}
+            return data
+
+        def find_top_k_similar(source, targets, k=20):
+            dists = np.linalg.norm(targets - source[:, None], axis=0)  # (100,)
+            top_indices = np.argpartition(dists, k - 1)[:k]
+            top_indices = top_indices[np.argsort(dists[top_indices])]
+            return top_indices
+
+        def determine_closest_dates(target_date, dates):
+            target_date = np.array(target_date, dtype="datetime64[D]")
+            dates = np.array(dates, dtype="datetime64[D]")
+            diffs = np.abs(dates - target_date)
+            order = np.argsort(diffs)
+            return order.tolist()
+
+        train_path = controller.train_data_path
+        validation_path = controller.validation_data_path
+        participants = os.listdir(train_path)
+
+        for participant in participants:
+            current_train_path = os.path.join(train_path, participant)
+            train_transcripts_path = [str(p) for p in Path(current_train_path).glob("*.json")]
+            train_general_info_path = os.path.join(current_train_path, 'general_info.json')
+            train_transcripts_path.remove(str(train_general_info_path))
+            train_data = read_participant_data(train_transcripts_path)
+
+            current_validation_path = os.path.join(validation_path, participant)
+            validation_transcripts_path = [str(p) for p in Path(current_validation_path).glob("*.json")]
+            validation_general_info_path = os.path.join(current_validation_path, 'general_info.json')
+            validation_transcripts_path.remove(str(validation_general_info_path))
+            validation_data = read_participant_data(validation_transcripts_path)
+
+            train_questions = train_data['questions']
+            train_answers = train_data['answers']
+            train_question_vectors = train_data['question_vectors']
+            train_dates = train_data['dates']
+
+            validation_question_vectors = validation_data['question_vectors']
+            validation_dates = validation_data['dates']
+            validation_jsons_path = validation_data['jsons_path']
+            validation_participant_keys = validation_data['keys']
+
+            selected_questions_list = []
+            selected_answers_list = []
+            for i in range(validation_question_vectors.shape[-1]):
+                validation_question_vector = validation_question_vectors[:, i]
+                validation_date = validation_dates[i]
+
+                similar_indices = find_top_k_similar(validation_question_vector, train_question_vectors, k=20)
+                selected_dates = train_dates[similar_indices]
+                order_of_dates = determine_closest_dates(validation_date, selected_dates)
+                selected_indices = similar_indices[order_of_dates[0:5]]
+
+                selected_questions = list(train_questions[selected_indices])
+                selected_answers = list(train_answers[selected_indices])
+
+                selected_questions_list.append(selected_questions)
+                selected_answers_list.append(selected_answers)
+
+            validation_jsons_path = list(validation_jsons_path)
+            validation_participant_keys = list(validation_participant_keys)
+
+            while len(validation_jsons_path) > 0:
+                current_json_path = validation_jsons_path[0]
+                indices = [m for m, v in enumerate(validation_jsons_path) if v == current_json_path]
+
+                with open(current_json_path, 'r') as f3:
+                    data = json.load(f3)
+
+                for index in indices:
+                    key = str(validation_participant_keys[index])
+                    questions = [str(x) for x in selected_questions_list[index]]
+                    answers = [str(x) for x in selected_answers_list[index]]
+                    data['participant_transcript'][key]['rag_samples'] = {'questions': questions, 'answers': answers}
+
+                with open(current_json_path, 'w') as f4:
+                    json.dump(data, f4, indent=4)
+
+                for idx in sorted(indices, reverse=True):
+                    del validation_jsons_path[idx]
+                    del validation_participant_keys[idx]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     def extract_text_stylometrics(self):
         def lexical_richness_calculator(text):
@@ -333,124 +639,134 @@ class TextHandler:
                     with open(transcript_path, "r", encoding="utf-8") as f1:
                         data = json.load(f1)
 
-                    participant_transcript = data['participant_transcript']
-                    participant_transcript_keys = list(participant_transcript.keys())
-                    for participant_key in participant_transcript_keys:
-                        sentence_with_tempo_pause = participant_transcript[participant_key]['text']
-                        sentence = re.sub(r"<(?:TEMPO|PAUSE)_[A-Z]+>", "", sentence_with_tempo_pause)
-
-                        feature_vector = []
-                        nlp = spacy.load("en_core_web_sm", disable=["ner"])
+                    sources = ['moderator_transcript', 'participant_transcript', 'simulated_transcript_raw_gpt', 'simulated_transcript_sft',
+                               'simulated_transcript_sft_rag', 'simulated_transcript_dpo', 'simulated_transcript_dpo_rag']
+                    for source in sources:
+                        if source not in data:
+                            continue
                         
-                        lexical_richness = lexical_richness_calculator(sentence)
-                        feature_vector.append(lexical_richness['ttr'])
-                        feature_vector.append(lexical_richness['mtld'])
-                        feature_vector.append(lexical_richness['hdd'])
-
-                        pronoun_ratios = pronoun_ratios_calculator(sentence, nlp)
-                        feature_vector.append(pronoun_ratios['pron_ratio_first_singular'])
-                        feature_vector.append(pronoun_ratios['pron_ratio_first_plural'])
-                        feature_vector.append(pronoun_ratios['pron_ratio_second'])
-                        feature_vector.append(pronoun_ratios['pron_ratio_third_singular'])
-                        feature_vector.append(pronoun_ratios['pron_ratio_third_plural'])
-                        feature_vector.append(pronoun_ratios['pron_ratio_demonstrative'])
-                        feature_vector.append(pronoun_ratios['pron_ratio_indefinite'])
-                        feature_vector.append(pronoun_ratios['pronoun_to_noun_ratio'])
-
-                        pos_distribution = pos_distribution_calculator(sentence, nlp)
-                        feature_vector.append(pos_distribution['pos_ADJ'])
-                        feature_vector.append(pos_distribution['pos_ADP'])
-                        feature_vector.append(pos_distribution['pos_ADV'])
-                        feature_vector.append(pos_distribution['pos_AUX'])
-                        feature_vector.append(pos_distribution['pos_CCONJ'])
-                        feature_vector.append(pos_distribution['pos_DET'])
-                        feature_vector.append(pos_distribution['pos_INTJ'])
-                        feature_vector.append(pos_distribution['pos_NOUN'])
-                        feature_vector.append(pos_distribution['pos_NUM'])
-                        feature_vector.append(pos_distribution['pos_PART'])
-                        feature_vector.append(pos_distribution['pos_PRON'])
-                        feature_vector.append(pos_distribution['pos_PROPN'])
-                        feature_vector.append(pos_distribution['pos_PUNCT'])
-                        feature_vector.append(pos_distribution['pos_SCONJ'])
-                        feature_vector.append(pos_distribution['pos_SYM'])
-                        feature_vector.append(pos_distribution['pos_VERB'])
-                        feature_vector.append(pos_distribution['pos_X'])
-                        feature_vector.append(pos_distribution['pos_SPACE'])
-
-                        function_content_ratio = function_content_ratio_calculator(sentence, nlp)
-                        feature_vector.append(function_content_ratio['function_ratio'])
-                        feature_vector.append(function_content_ratio['content_ratio'])
-
-                        disfluency_features = disfluency_features_calculator(sentence)
-                        feature_vector.append(disfluency_features['filler_ratio'])
-                        feature_vector.append(disfluency_features['repetition_ratio'])
-
-                        sentence_complexity = sentence_complexity_calculator(sentence, nlp)
-                        feature_vector.append(sentence_complexity['avg_sentence_length'])
-                        feature_vector.append(sentence_complexity['avg_clause_depth'])
-
-                        tempo_pause_features = tempo_pause_features_calculator(sentence_with_tempo_pause)
-                        feature_vector.append(tempo_pause_features['n_segments'])
-                        feature_vector.append(tempo_pause_features['n_pauses'])
-                        feature_vector.append(tempo_pause_features['tempo_ratio_SLOW'])
-                        feature_vector.append(tempo_pause_features['tempo_ratio_MED'])
-                        feature_vector.append(tempo_pause_features['tempo_ratio_FAST'])
-                        feature_vector.append(tempo_pause_features['pause_ratio_NONE'])
-                        feature_vector.append(tempo_pause_features['pause_ratio_SHORT'])
-                        feature_vector.append(tempo_pause_features['pause_ratio_MED'])
-                        feature_vector.append(tempo_pause_features['pause_ratio_LONG'])
-                        feature_vector.append(tempo_pause_features['pause_ratio_VLONG'])
-                        feature_vector.append(tempo_pause_features['tempo_mean'])
-                        feature_vector.append(tempo_pause_features['tempo_std'])
-                        feature_vector.append(tempo_pause_features['pause_mean'])
-                        feature_vector.append(tempo_pause_features['pause_std'])
-                        feature_vector.append(tempo_pause_features['tempo_switch_rate'])
-                        feature_vector.append(tempo_pause_features['pause_switch_rate'])
-                        feature_vector.append(tempo_pause_features['tempo_run_mean'])
-                        feature_vector.append(tempo_pause_features['tempo_run_max'])
-                        feature_vector.append(tempo_pause_features['pause_run_mean'])
-                        feature_vector.append(tempo_pause_features['pause_run_max'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_SLOW_to_SLOW'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_SLOW_to_MED'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_SLOW_to_FAST'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_MED_to_SLOW'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_MED_to_MED'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_MED_to_FAST'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_FAST_to_SLOW'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_FAST_to_MED'])
-                        feature_vector.append(tempo_pause_features['tempo_trans_FAST_to_FAST'])
-                        feature_vector.append(tempo_pause_features['pause_trans_NONE_to_NONE'])
-                        feature_vector.append(tempo_pause_features['pause_trans_NONE_to_SHORT'])
-                        feature_vector.append(tempo_pause_features['pause_trans_NONE_to_MED'])
-                        feature_vector.append(tempo_pause_features['pause_trans_NONE_to_LONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_NONE_to_VLONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_NONE'])
-                        feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_SHORT'])
-                        feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_MED'])
-                        feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_LONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_VLONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_MED_to_NONE'])
-                        feature_vector.append(tempo_pause_features['pause_trans_MED_to_SHORT'])
-                        feature_vector.append(tempo_pause_features['pause_trans_MED_to_MED'])
-                        feature_vector.append(tempo_pause_features['pause_trans_MED_to_LONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_MED_to_VLONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_LONG_to_NONE'])
-                        feature_vector.append(tempo_pause_features['pause_trans_LONG_to_SHORT'])
-                        feature_vector.append(tempo_pause_features['pause_trans_LONG_to_MED'])
-                        feature_vector.append(tempo_pause_features['pause_trans_LONG_to_LONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_LONG_to_VLONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_NONE'])
-                        feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_SHORT'])
-                        feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_MED'])
-                        feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_LONG'])
-                        feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_VLONG'])
-
-                        there_is_non_expected_value = any(not isinstance(x, (int, float)) for x in feature_vector)
-                        if there_is_non_expected_value:
-                            print('text_stylometrics error: non expected value for participant_key', participant_key, 'in', transcript_path)
-                        else:
-                            data['participant_transcript'][participant_key]['stylometric_text'] = feature_vector
+                        transcript = data[source]
+                        transcript_keys = list(transcript.keys())
+                        for key in transcript_keys:
+                            if 'stylometric_text' in transcript[key]:
+                                continue
+                            
+                            sentence_with_tempo_pause = transcript[key]['text']
+                            sentence = re.sub(r"<(?:TEMPO|PAUSE)_[A-Z]+>", "", sentence_with_tempo_pause)
+    
+                            feature_vector = []
+                            nlp = spacy.load("en_core_web_sm", disable=["ner"])
+                            
+                            lexical_richness = lexical_richness_calculator(sentence)
+                            feature_vector.append(lexical_richness['ttr'])
+                            feature_vector.append(lexical_richness['mtld'])
+                            feature_vector.append(lexical_richness['hdd'])
+    
+                            pronoun_ratios = pronoun_ratios_calculator(sentence, nlp)
+                            feature_vector.append(pronoun_ratios['pron_ratio_first_singular'])
+                            feature_vector.append(pronoun_ratios['pron_ratio_first_plural'])
+                            feature_vector.append(pronoun_ratios['pron_ratio_second'])
+                            feature_vector.append(pronoun_ratios['pron_ratio_third_singular'])
+                            feature_vector.append(pronoun_ratios['pron_ratio_third_plural'])
+                            feature_vector.append(pronoun_ratios['pron_ratio_demonstrative'])
+                            feature_vector.append(pronoun_ratios['pron_ratio_indefinite'])
+                            feature_vector.append(pronoun_ratios['pronoun_to_noun_ratio'])
+    
+                            pos_distribution = pos_distribution_calculator(sentence, nlp)
+                            feature_vector.append(pos_distribution['pos_ADJ'])
+                            feature_vector.append(pos_distribution['pos_ADP'])
+                            feature_vector.append(pos_distribution['pos_ADV'])
+                            feature_vector.append(pos_distribution['pos_AUX'])
+                            feature_vector.append(pos_distribution['pos_CCONJ'])
+                            feature_vector.append(pos_distribution['pos_DET'])
+                            feature_vector.append(pos_distribution['pos_INTJ'])
+                            feature_vector.append(pos_distribution['pos_NOUN'])
+                            feature_vector.append(pos_distribution['pos_NUM'])
+                            feature_vector.append(pos_distribution['pos_PART'])
+                            feature_vector.append(pos_distribution['pos_PRON'])
+                            feature_vector.append(pos_distribution['pos_PROPN'])
+                            feature_vector.append(pos_distribution['pos_PUNCT'])
+                            feature_vector.append(pos_distribution['pos_SCONJ'])
+                            feature_vector.append(pos_distribution['pos_SYM'])
+                            feature_vector.append(pos_distribution['pos_VERB'])
+                            feature_vector.append(pos_distribution['pos_X'])
+                            feature_vector.append(pos_distribution['pos_SPACE'])
+    
+                            function_content_ratio = function_content_ratio_calculator(sentence, nlp)
+                            feature_vector.append(function_content_ratio['function_ratio'])
+                            feature_vector.append(function_content_ratio['content_ratio'])
+    
+                            disfluency_features = disfluency_features_calculator(sentence)
+                            feature_vector.append(disfluency_features['filler_ratio'])
+                            feature_vector.append(disfluency_features['repetition_ratio'])
+    
+                            sentence_complexity = sentence_complexity_calculator(sentence, nlp)
+                            feature_vector.append(sentence_complexity['avg_sentence_length'])
+                            feature_vector.append(sentence_complexity['avg_clause_depth'])
+    
+                            tempo_pause_features = tempo_pause_features_calculator(sentence_with_tempo_pause)
+                            feature_vector.append(tempo_pause_features['n_segments'])
+                            feature_vector.append(tempo_pause_features['n_pauses'])
+                            feature_vector.append(tempo_pause_features['tempo_ratio_SLOW'])
+                            feature_vector.append(tempo_pause_features['tempo_ratio_MED'])
+                            feature_vector.append(tempo_pause_features['tempo_ratio_FAST'])
+                            feature_vector.append(tempo_pause_features['pause_ratio_NONE'])
+                            feature_vector.append(tempo_pause_features['pause_ratio_SHORT'])
+                            feature_vector.append(tempo_pause_features['pause_ratio_MED'])
+                            feature_vector.append(tempo_pause_features['pause_ratio_LONG'])
+                            feature_vector.append(tempo_pause_features['pause_ratio_VLONG'])
+                            feature_vector.append(tempo_pause_features['tempo_mean'])
+                            feature_vector.append(tempo_pause_features['tempo_std'])
+                            feature_vector.append(tempo_pause_features['pause_mean'])
+                            feature_vector.append(tempo_pause_features['pause_std'])
+                            feature_vector.append(tempo_pause_features['tempo_switch_rate'])
+                            feature_vector.append(tempo_pause_features['pause_switch_rate'])
+                            feature_vector.append(tempo_pause_features['tempo_run_mean'])
+                            feature_vector.append(tempo_pause_features['tempo_run_max'])
+                            feature_vector.append(tempo_pause_features['pause_run_mean'])
+                            feature_vector.append(tempo_pause_features['pause_run_max'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_SLOW_to_SLOW'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_SLOW_to_MED'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_SLOW_to_FAST'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_MED_to_SLOW'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_MED_to_MED'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_MED_to_FAST'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_FAST_to_SLOW'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_FAST_to_MED'])
+                            feature_vector.append(tempo_pause_features['tempo_trans_FAST_to_FAST'])
+                            feature_vector.append(tempo_pause_features['pause_trans_NONE_to_NONE'])
+                            feature_vector.append(tempo_pause_features['pause_trans_NONE_to_SHORT'])
+                            feature_vector.append(tempo_pause_features['pause_trans_NONE_to_MED'])
+                            feature_vector.append(tempo_pause_features['pause_trans_NONE_to_LONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_NONE_to_VLONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_NONE'])
+                            feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_SHORT'])
+                            feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_MED'])
+                            feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_LONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_SHORT_to_VLONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_MED_to_NONE'])
+                            feature_vector.append(tempo_pause_features['pause_trans_MED_to_SHORT'])
+                            feature_vector.append(tempo_pause_features['pause_trans_MED_to_MED'])
+                            feature_vector.append(tempo_pause_features['pause_trans_MED_to_LONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_MED_to_VLONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_LONG_to_NONE'])
+                            feature_vector.append(tempo_pause_features['pause_trans_LONG_to_SHORT'])
+                            feature_vector.append(tempo_pause_features['pause_trans_LONG_to_MED'])
+                            feature_vector.append(tempo_pause_features['pause_trans_LONG_to_LONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_LONG_to_VLONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_NONE'])
+                            feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_SHORT'])
+                            feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_MED'])
+                            feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_LONG'])
+                            feature_vector.append(tempo_pause_features['pause_trans_VLONG_to_VLONG'])
+    
+                            there_is_non_expected_value = any(not isinstance(x, (int, float)) for x in feature_vector)
+                            if there_is_non_expected_value:
+                                print('text_stylometrics error: non expected value for source',
+                                      source, 'participant_key', key, 'in', transcript_path)
+                            else:
+                                data[source][key]['stylometric_text'] = feature_vector
+    
                     with open(transcript_path, 'w') as f2:
                         json.dump(data, f2, indent=4)
-
 

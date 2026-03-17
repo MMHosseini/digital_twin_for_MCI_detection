@@ -1,8 +1,7 @@
 import time
 import json
 import os
-import shutil
-from pathlib import Path
+from tqdm import tqdm
 from typing import Any, Dict, Optional
 from openai import OpenAI
 from control_panel import ControlPanel
@@ -27,7 +26,7 @@ class PersonaFineTuner:
         supervised_fine_tuned_model_name = controller.supervised_fine_tuned_model_name
         with open(supervised_fine_tuned_model_name, 'r') as f:
             sft_model_name = f.read().strip()
-        dpo_model_name = self._train(base_model = sft_model_name, method = "dpo", n_epochs = 2,
+        dpo_model_name = self._train(base_model = sft_model_name, method = "dpo", n_epochs = 3,
                                train_path=controller.language_model_direct_preference_optimization_train_path)
         dpo_fine_tuned_model_name = controller.dpo_fine_tuned_model_name
         with open(dpo_fine_tuned_model_name, 'w') as f:
@@ -36,18 +35,22 @@ class PersonaFineTuner:
     def inference_language_model(self): # simulate validation responses by raw GPT-4.1, fine-tuned, dpo, and rag
         raw_model = "gpt-4.1-mini-2025-04-14"
         self._inference(model=raw_model, key_name='simulated_transcript_raw_gpt', rag=False)
-        
-        with open(controller.supervised_fine_tuned_model_name) as f:
-            sft_model = f.read().strip()
-        self._inference(model=sft_model, key_name='simulated_transcript_sft', rag=False)
 
-        with open(controller.dpo_fine_tuned_model_name) as f:
-            dpo_model = f.read().strip()
-        self._inference(model=dpo_model, key_name='simulated_transcript_dpo', rag=False)
-
-        with open(controller.dpo_fine_tuned_model_name) as f:
-            dpo_model = f.read().strip()
-        self._inference(model=dpo_model, key_name='simulated_transcript_rag', rag=True)
+        # with open(controller.supervised_fine_tuned_model_name) as f:
+        #     sft_model = f.read().strip()
+        # self._inference(model=sft_model, key_name='simulated_transcript_sft', rag=False)
+        #
+        # with open(controller.supervised_fine_tuned_model_name) as f:
+        #     sft_model = f.read().strip()
+        # self._inference(model=sft_model, key_name='simulated_transcript_sft_rag', rag=True)
+        #
+        # with open(controller.dpo_fine_tuned_model_name) as f:
+        #     dpo_model = f.read().strip()
+        # self._inference(model=dpo_model, key_name='simulated_transcript_dpo', rag=False)
+        #
+        # with open(controller.supervised_fine_tuned_model_name) as f:
+        #     dpo_model = f.read().strip()
+        # self._inference(model=dpo_model, key_name='simulated_transcript_dpo_rag', rag=True)
 
     # -------------------------
     # TRAINING
@@ -108,8 +111,8 @@ class PersonaFineTuner:
         timeout_sec = 6 * 60 * 60
         print_events = True
         while True:
-            if time.time() - start > timeout_sec:
-                raise RuntimeError(f"Fine-tuning job {job_id} timed out after {timeout_sec} seconds")
+            # if time.time() - start > timeout_sec:
+            #     raise RuntimeError(f"Fine-tuning job {job_id} timed out after {timeout_sec} seconds")
 
             current = self.client.fine_tuning.jobs.retrieve(job_id)
 
@@ -183,25 +186,51 @@ class PersonaFineTuner:
             "Do not mention META unless the user explicitly asks about it.\n\n"
 
             "If STYLE EXAMPLES are provided, you may reuse their content as well as their phrasing, "
-            "as long as the response remains consistent with the respondent’s overall style."
+            "as long as the response remains consistent with the respondent’s overall style.\n"
             
-            "Output formatting constraints for tokens:\n"
-            "- Allowed tokens: <TEMPO_*> and <PAUSE_*>\n"
-            "- Sentence-initial tokens are forbidden: a sentence must not start with '<TEMPO_' or '<PAUSE_'.\n"
-            "- Tokens may appear only after at least one character of a sentence, either mid-sentence or sentence-final.\n"
-            "- If multiple sentences are produced: for sentences 1..N-1, you may use <TEMPO_*><PAUSE_*>; "
-            "for sentence N (the last sentence), use <TEMPO_*> only and do not output any <PAUSE_*> after it.\n\n"
-            "Examples:\n"
-            "- Sentence 1,<TEMPO_><PAUSE_> sentence 2.<TEMPO_><PAUSE_> Sentence 3.<TEMPO_><PAUSE_> Sentence 4.<TEMPO_>\n"
-            "- Sentence 1<TEMPO_>\n"
-            "- Sentence 1.<TEMPO_><PAUSE_> sentence 2,<TEMPO_><PAUSE_> Sentence 3.<TEMPO_>\n"
-            "- Sentence 1.<TEMPO_><PAUSE_> sentence 2.<TEMPO_>\n"
-
+            "Anti-repetition rule (high priority):"
+            "- Never repeat the same word more than twice consecutively (e.g., \"I I I\" is forbidden)."
+            "- If you notice repetition starting, stop and rewrite the sentence once, cleanly."
+            "- Do not pad with repeated pronouns or filler. Prefer a single complete sentence."
         )
+
+        if key_name == 'simulated_transcript_raw_gpt':
+            system_prompt = (
+                "You are simulating the RESPONDENT (participant) from a research dataset. "
+                "Your job is to generate irrelevant answer to the question, in a way that the RESPONDENT wouldn't.\n\n"
+
+                "Primary objective: reproduce the respondent’s response in a different style as faithfully as possible. "
+                "Style includes tone, wording, verbosity, hesitations, pacing, directness, formality, "
+                "sentence length, and conversational habits. Style consistency is more important than factual accuracy.\n\n"
+
+                "Paralinguistic markers: responses may include special tokens that describe speaking behavior:\n"
+                "- <TEMPO_SLOW>, <TEMPO_MED>, <TEMPO_FAST>, <TEMPO_VFAST> indicate speaking speed\n"
+                "- <PAUSE_NONE>, <PAUSE_SHORT>, <PAUSE_MED>, <PAUSE_LONG>, <PAUSE_VLONG> indicate pauses\n"
+                "When present, place these tokens exactly as shown in the training data. "
+                "Do not invent new tempo or pause tokens.\n\n"
+
+                "Privacy/controls: META fields are control variables for conditioning. "
+                "Do not mention META unless the user explicitly asks about it.\n\n"
+            )
+            tempo_pause_instruction = (
+                "Output formatting constraints for tokens:\n"
+                "- Allowed tokens: <TEMPO_*> and <PAUSE_*>\n"
+                "- Sentence-initial tokens are forbidden: a sentence must not start with '<TEMPO_' or '<PAUSE_'.\n"
+                "- Tokens may appear only after at least one character of a sentence, either mid-sentence or sentence-final.\n"
+                "- If multiple sentences are produced: for sentences 1..N-1, you may use <TEMPO_*><PAUSE_*>; "
+                "for sentence N (the last sentence), use <TEMPO_*> only and do not output any <PAUSE_*> after it.\n"
+                "Examples:\n"
+                "- Sentence 1,<TEMPO_><PAUSE_> sentence 2.<TEMPO_><PAUSE_> Sentence 3.<TEMPO_><PAUSE_> Sentence 4.<TEMPO_>\n"
+                "- Sentence 1<TEMPO_>\n"
+                "- Sentence 1.<TEMPO_><PAUSE_> sentence 2,<TEMPO_><PAUSE_> Sentence 3.<TEMPO_>\n"
+                "- Sentence 1.<TEMPO_><PAUSE_> sentence 2.<TEMPO_>\n"
+            )
+            system_prompt  = system_prompt + tempo_pause_instruction
 
         validation_path = controller.validation_data_path
         participants = os.listdir(validation_path)
         for participant in participants:
+            print('We are at:', participant)
             current_path = os.path.join(validation_path, participant)
             transcripts_name = os.listdir(current_path)
             general_info_path = os.path.join(current_path, 'general_info.json')
@@ -213,23 +242,29 @@ class PersonaFineTuner:
             gender = info['gender']
 
             transcripts_name.remove('general_info.json')
-            for transcript_name in transcripts_name:
+            for transcript_name in tqdm(transcripts_name):
                 if not transcript_name.endswith('.json'):
                     continue
                 transcript_path = os.path.join(current_path, transcript_name)
                 with open(transcript_path, "r", encoding="utf-8") as f2:
                     data = json.load(f2)
                 moderator_transcript = data['moderator_transcript']
+                participant_transcript = data['participant_transcript']
                 date = data['date']
                 topic = data['topic']
                 moderator_transcript_keys = list(moderator_transcript.keys())
                 response_dict = dict()
                 for moderator_key in moderator_transcript_keys:
+                    participant_key = str(int(moderator_key) + 1)
                     question = moderator_transcript[moderator_key]['text']
                     user_text = f"PERSON_ID: {id} META: age={age} | gender={gender} | date_of_interview={date} | topic={topic} QUESTION: {question}"
 
                     if rag is True:
-                        pass # later add some examples to user_text
+                        similar_questions = participant_transcript[participant_key]['rag_samples']['questions']
+                        similar_answers = participant_transcript[participant_key]['rag_samples']['answers']
+                        user_text += "\nThis is some similar answers generated by you to some similar questions:\n"
+                        for m in range(len(similar_answers)):
+                            user_text += f"- Question {m+1}:{similar_questions[m]}\n- Answer {m+1}:{similar_answers[m]}\n\n"
 
                     resp = self.client.responses.create(
                         model=model,
@@ -241,9 +276,10 @@ class PersonaFineTuner:
                         max_output_tokens=int(400),
                     )
 
-                    generated_response = resp.output_text
+                    generated_response = (resp.output_text.replace("\u2019", "'").replace("\u2018", "'")
+                                          .replace("\u201c", '"').replace("\u201d", '"'))
                     new_info = {'text': generated_response}
-                    response_dict[str(int(moderator_key) + 1)] = new_info
+                    response_dict[participant_key] = new_info
 
                 data[key_name] = response_dict
                 with open(transcript_path, 'w') as f3:

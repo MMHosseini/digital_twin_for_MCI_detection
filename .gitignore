@@ -1,4 +1,6 @@
 \data
+\pretrained_models
 \.idea
 \__pycache__
+\.gitignore
 

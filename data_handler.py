@@ -6,6 +6,8 @@ import shutil
 from datetime import datetime
 import numpy as np
 from pathlib import Path
+from tqdm import tqdm
+import tensorflow as tf
 from control_panel import ControlPanel
 
 controller = ControlPanel()
@@ -149,7 +151,7 @@ class DataHandler:
                 transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
                 transcripts_path.remove(str(os.path.join(current_path, 'general_info.json')))
 
-                for transcript_path in transcripts_path:
+                for transcript_path in tqdm(transcripts_path):
                     with open(transcript_path, 'r') as f:
                         data = json.load(f)
 
@@ -177,6 +179,212 @@ class DataHandler:
 
                     with open(transcript_path, 'w') as f:
                         json.dump(data, f, indent=4)
+
+    def extract_mci_info(self):
+        subsets = [controller.train_data_path, controller.validation_data_path]
+        for subset in subsets:
+            participants = os.listdir(subset)
+            participants.sort()
+            for participant in participants:
+                current_path = os.path.join(subset, participant)
+                transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
+                general_info_path = os.path.join(current_path, 'general_info.json')
+                with open(general_info_path, "r", encoding="utf-8") as f0:
+                    general_info = json.load(f0)
+                transcripts_path.remove(str(general_info_path))
+
+                id = general_info['id']
+                gender = general_info['gender']
+                age = general_info['age']
+                race = general_info['race']
+                transcripts_info = general_info['transcripts_info']
+                baseline_info = general_info['baseline']
+                six_month_info = general_info['six_month']
+                twelve_month_info = general_info['twelve_month']
+                baseline_cognitive_status = 1 if general_info['baseline']['normal_cognitive'] == 'yes' else 0
+                six_month_cognitive_status = 1 if general_info['six_month']['normal_cognitive'] == 'yes' else 0
+                twelve_month_cognitive_status = 1 if general_info['twelve_month']['normal_cognitive'] == 'yes' else 0
+                mci_info = dict()
+                for transcript_path in tqdm(transcripts_path):
+                    with open(transcript_path, "r", encoding="utf-8") as f1:
+                        data = json.load(f1)
+
+                    if 'mci_info' in data:
+                        continue
+
+                    participant_label = participants.index(id)
+                    gender_id = 0 if gender == 'male' else 1
+
+                    interview_date = datetime.strptime(data['date'], "%Y-%m-%d").date()
+                    baseline_date = datetime.strptime(baseline_info['date'], "%Y-%m-%d").date()
+                    six_month_date = datetime.strptime(six_month_info['date'], "%Y-%m-%d").date()
+                    twelve_month_date = datetime.strptime(twelve_month_info['date'], "%Y-%m-%d").date()
+
+                    past_from_age = (interview_date - baseline_date).days
+                    age_at_interview = age + (past_from_age / 365)
+
+                    if baseline_info['moca_face_to_face'] is not None:
+                        baseline_mci_score = float(baseline_info['moca_face_to_face'])
+                    else:
+                        baseline_mci_score = float(baseline_info['moca_telephone']) / 22 * 30
+
+                    if six_month_info['moca_face_to_face'] is not None:
+                        six_month_mci_score = float(six_month_info['moca_face_to_face'])
+                    else:
+                        six_month_mci_score = float(six_month_info['moca_telephone']) / 22 * 30
+
+                    if twelve_month_info['moca_face_to_face'] is not None:
+                        twelve_month_mci_score = float(twelve_month_info['moca_face_to_face'])
+                    else:
+                        twelve_month_mci_score = float(twelve_month_info['moca_telephone']) / 22 * 30
+
+                    interview_time_mci_score  = None
+                    last_reported_mci_score = None
+                    past_days_from_last_mci_evaluation = None
+                    interview_period_index = None
+                    last_cognitive_status = None
+                    if interview_date <= baseline_date:
+                        past_days_from_last_mci_evaluation = (interview_date - baseline_date).days
+                        interview_time_mci_score = baseline_mci_score
+                        last_reported_mci_score = baseline_mci_score
+                        interview_period_index = 0
+                        last_cognitive_status = baseline_cognitive_status
+                    elif baseline_date < interview_date < six_month_date:
+                        past_days_from_last_mci_evaluation = (interview_date - baseline_date).days
+                        gap = (six_month_date - baseline_date).days
+                        interview_time_mci_score = baseline_mci_score + (past_days_from_last_mci_evaluation / gap) * (six_month_mci_score - baseline_mci_score)
+                        last_reported_mci_score = baseline_mci_score
+                        interview_period_index = 1
+                        last_cognitive_status = baseline_cognitive_status
+                    elif six_month_date <= interview_date < twelve_month_date:
+                        past_days_from_last_mci_evaluation = (interview_date - six_month_date).days
+                        gap = (twelve_month_date - six_month_date).days
+                        interview_time_mci_score = six_month_mci_score + (past_days_from_last_mci_evaluation / gap) * (twelve_month_mci_score - six_month_mci_score)
+                        last_reported_mci_score = six_month_mci_score
+                        interview_period_index = 2
+                        last_cognitive_status = six_month_cognitive_status
+                    elif interview_date >= twelve_month_date:
+                        past_days_from_last_mci_evaluation = (interview_date - twelve_month_date).days
+                        interview_time_mci_score = twelve_month_mci_score
+                        last_reported_mci_score = twelve_month_mci_score
+                        interview_period_index = 3
+                        last_cognitive_status = twelve_month_cognitive_status
+
+                    mci_info['participant_label'] = participant_label
+                    mci_info['gender'] = gender_id
+                    mci_info['age_at_start'] = age
+                    mci_info['interview_period_index'] = interview_period_index
+                    mci_info['age_at_interview'] = age_at_interview
+                    mci_info['last_reported_mci_score'] = last_reported_mci_score
+                    mci_info['past_days_from_last_mci_evaluation'] = past_days_from_last_mci_evaluation
+                    mci_info['interview_time_mci_score'] = interview_time_mci_score
+                    mci_info['last_cognitive_status'] = last_cognitive_status
+
+                    data['mci_info'] = mci_info
+                    with open(transcript_path, 'w') as f2:
+                        json.dump(data, f2, indent=4)
+
+    def load_data(self, subset, features, participant, respondent='participant_transcript'):
+        if subset == 'train':
+            data_path = controller.train_data_path
+        elif subset == 'validation':
+            data_path = controller.validation_data_path
+        else:
+            print('Error in load_data: You have chosen a wrong subset for loading')
+            return
+
+        condition_matrix = list()
+        question_matrix = list()
+        answer_matrix = list()
+        mci_vector = list()
+
+        current_path = os.path.join(data_path, participant)
+        transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
+        general_info_path = os.path.join(current_path, 'general_info.json')
+        transcripts_path.remove(str(general_info_path))
+
+        for transcript_path in tqdm(transcripts_path):
+            with open(transcript_path, "r", encoding="utf-8") as f1:
+                data = json.load(f1)
+
+            moderator_transcript = data['moderator_transcript']
+            respondant_transcript = data[respondent]
+
+            condition_vector = list()
+            if respondent == 'simulated_transcript_raw_gpt':
+                condition_vector.append(np.random.randint(5, 10))
+                condition_vector.append(np.random.randint(0, 2))
+                condition_vector.append(1 + np.random.uniform(0, 0.02))
+                condition_vector.append(np.random.randint(20, 31))
+                condition_vector.append(np.random.randint(0, 365))
+                condition_vector.append(np.random.randint(0, 2))
+                condition_vector.append(data['topic_descriptor'])
+                mci_score = np.random.randint(15, 31) / 30
+            else:
+                condition_vector.append(data['mci_info']['participant_label'])
+                condition_vector.append(data['mci_info']['interview_period_index'])
+                condition_vector.append(data['mci_info']['age_at_interview'] / data['mci_info']['age_at_start'])
+                condition_vector.append(data['mci_info']['last_reported_mci_score'])
+                condition_vector.append(data['mci_info']['past_days_from_last_mci_evaluation'])
+                condition_vector.append(data['mci_info']['last_cognitive_status'])
+                condition_vector.append(data['topic_descriptor'])
+                mci_score = data['mci_info']['interview_time_mci_score'] / 30
+
+            condition_vector = sum(([x] if not isinstance(x, list) else x for x in condition_vector), [])
+            condition_vector = list(np.random.rand(len(condition_vector)))
+
+            moderator_transcript_keys = list(moderator_transcript.keys())
+            respondant_transcript_keys = list(respondant_transcript.keys())
+            for i in range(len(moderator_transcript_keys)):
+                moderator_transcript_key = moderator_transcript_keys[i]
+                respondant_transcript_key = respondant_transcript_keys[i]
+                question_vector = list()
+                answer_vector = list()
+                for feature in features:
+                    question = np.array(moderator_transcript[moderator_transcript_key][feature])
+                    answer = np.array(respondant_transcript[respondant_transcript_key][feature])
+                    question_vector.append(list(question[:, 0:2].reshape(-1))) # [:, 0]: mean, [:, 1]: std, [:, 2]: all_together
+                    answer_vector.append(list(answer[:, 0:2].reshape(-1)))
+                question_vector = sum(([x] if not isinstance(x, list) else x for x in question_vector), [])
+                answer_vector = sum(([x] if not isinstance(x, list) else x for x in answer_vector), [])
+
+                condition_vector = np.array(condition_vector)
+                question_vector = np.array(question_vector)
+                answer_vector = np.array(answer_vector)
+
+                norm = np.linalg.norm(condition_vector)  # L2 norm
+                condition_vector = condition_vector / norm
+                norm = np.linalg.norm(question_vector)  # L2 norm
+                question_vector = question_vector / norm
+                norm = np.linalg.norm(answer_vector)  # L2 norm
+                answer_vector = answer_vector / norm
+
+                condition_matrix.append(condition_vector)
+                question_matrix.append(question_vector)
+                answer_matrix.append(answer_vector)
+                mci_vector.append(mci_score)
+        condition_matrix = np.array(condition_matrix)
+        question_matrix = np.array(question_matrix)
+        answer_matrix = np.array(answer_matrix)
+        mci_vector = np.array(mci_vector)
+
+        return condition_matrix, question_matrix, answer_matrix, mci_vector
+
+    def load_data_for_audio_mimic(self):
+        return 0, 0, 0, 0
+
+    def make_tf_dataset(self, question_np, condition_np, answer_np, mci_np, batch_size=32, shuffle=True, seed=42):
+        # Ensure float32 for TF
+        question_np = np.asarray(question_np, dtype=np.float32)
+        condition_np = np.asarray(condition_np, dtype=np.float32)
+        answer_np = np.asarray(answer_np, dtype=np.float32)
+        mci_np = np.asarray(mci_np, dtype=np.float32)
+
+        ds = tf.data.Dataset.from_tensor_slices((question_np, condition_np, answer_np, mci_np))
+        if shuffle:
+            ds = ds.shuffle(buffer_size=len(mci_np), seed=seed, reshuffle_each_iteration=True)
+        ds = ds.batch(batch_size, drop_remainder=False).prefetch(tf.data.AUTOTUNE)
+        return ds
 
     def __find_ranges(self, nums):
         if not nums:
