@@ -59,9 +59,10 @@ class Evaluator:
                     f.write("============================================\n")
 
     def audio_based_author_identification(self):
-        feature_types = ['prosody_audio', 'xvector_audio', 'wavlm_audio', 'all_audio']
+        # feature_types = ['prosody_audio', 'xvector_audio', 'wavlm_audio', 'all_audio']
         # response_sources = ['participant_transcript', 'simulated_transcript_raw_gpt', 'simulated_transcript_sft', 'simulated_transcript_dpo']
-        response_sources = ['participant_transcript']
+        feature_types = ['prosody_audio', 'wavlm_audio', 'all_audio']
+        response_sources = ['participant_transcript', 'simulated_transcript_raw_gpt', 'simulated_transcript_sft']
         os.makedirs(controller.result_path, exist_ok=True)
         save_path = os.path.join(controller.result_path, 'audio_based_author_identification.txt')
 
@@ -189,7 +190,7 @@ class Evaluator:
                             feature = np.concatenate([embedding, sentiment])
                         elif feature_type == 'all_audio':
                             prosody = np.array(transcript[key]['prosody_audio'])
-                            xvector = np.array(transcript[key]['xvector_audio'])
+                            # xvector = np.array(transcript[key]['xvector_audio'])
                             wavlm = np.array(transcript[key]['wavlm_audio'])
                             feature = np.concatenate([prosody, xvector, wavlm])
 
@@ -200,7 +201,7 @@ class Evaluator:
                         pass
 
         X = np.array(X)
-        print('Nan:', np.isnan(X[:, 0]).sum())
+        print('Num Nan:', np.isnan(X[:, 0]).sum())
         X = np.nan_to_num(X, nan=0.0)
         y = np.array(y)
         X, y = shuffle(X, y, random_state=42)

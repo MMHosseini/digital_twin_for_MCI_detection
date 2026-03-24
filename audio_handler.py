@@ -1,4 +1,3 @@
-from __future__ import annotations
 from typing import Dict, Any, Tuple
 import numpy as np
 import librosa
@@ -6,6 +5,8 @@ import os
 import json
 from pathlib import Path
 import subprocess
+
+from networkx.algorithms.approximation.traveling_salesman import simulated_annealing_tsp
 from tqdm import tqdm
 import math
 from control_panel import ControlPanel
@@ -13,8 +14,13 @@ from speechbrain.pretrained import EncoderClassifier
 from transformers import AutoFeatureExtractor, AutoModelForAudioXVector
 import torchaudio
 import torch
+import tensorflow as tf
+from tensorflow.keras.models import load_model
+from tensorflow.keras import Model, Input, layers
+from data_handler import DataHandler
 
 controller = ControlPanel()
+data_handler = DataHandler()
 
 class AudioHandler:
     def extract_audio_from_video(self):
@@ -343,5 +349,292 @@ class AudioHandler:
                         with open(transcript_path, "w", encoding="utf-8") as f2:
                             json.dump(data, f2, indent=4)
 
+    def calculate_loss(self, true_prosody, pred_prosody, true_wavlm, pred_wavlm, lambda_prosody=1.0, lambda_wavlm_mse=1.0, lambda_wavlm_cos=0.5):
+        prosody_loss = tf.reduce_mean(tf.square(true_prosody - pred_prosody))
+        wavlm_mse_loss = tf.reduce_mean(tf.square(true_wavlm - pred_wavlm))
+        pred_wavlm_norm = tf.math.l2_normalize(pred_wavlm, axis=1)
+        true_wavlm_norm = tf.math.l2_normalize(true_wavlm, axis=1)
+        cosine_sim = tf.reduce_sum(pred_wavlm_norm * true_wavlm_norm, axis=1)
+        wavlm_cos_loss = 1.0 - tf.reduce_mean(cosine_sim)
+        total_loss = lambda_prosody * prosody_loss + lambda_wavlm_mse * wavlm_mse_loss + lambda_wavlm_cos * wavlm_cos_loss
 
+        return total_loss, {
+            "total_loss": total_loss,
+            "prosody_loss": prosody_loss,
+            "wavlm_mse_loss": wavlm_mse_loss,
+            "wavlm_cos_loss": wavlm_cos_loss,
+        }
+
+    def _train_step(self, model, optimizer, epochs, train_set, validation_set, save_path):
+        num_batch = len(train_set)
+        best_model_loss = float('inf')
+        for epoch in range(epochs):
+            total_loss = 0
+            average_loss = 0
+            batch_index = 0
+            for text, mean_xvector, prosody_audio, wavlm_audio in train_set:
+                with tf.GradientTape() as tape:
+                    prosody_audio_reconstructed, wavlm_audio_reconstructed = model([text, mean_xvector], training=True)
+                    loss = self.calculate_loss(prosody_audio, prosody_audio_reconstructed, wavlm_audio, wavlm_audio_reconstructed)
+                model_gradient = tape.gradient(loss[0], model.trainable_variables)
+                optimizer.apply_gradients(zip(model_gradient, model.trainable_variables))
+                batch_index += 1
+
+                total_loss += loss[0]
+                average_loss = total_loss / batch_index
+                # tf.print("EPOCH: ", epoch, '/', epochs, ", BATCH: ", batch_index, '/', num_batch, ', BATCH_LOSS: ', loss, ', EPOCH_LOSS: ', average_loss)
+                # print('LOSS-> total:', float(loss[1]['total_loss']), 'prosody_loss:', float(loss[1]['prosody_loss']),
+                #       'wavlm_mse_loss:', float(loss[1]['wavlm_mse_loss']), 'wavlm_cos_loss:', float(loss[1]['wavlm_cos_loss']))
+
+            # save_path = os.path.join(model_path, 'audio_mimicker_epoch_' + str(int(epoch)) + '_loss_' + str(float(average_loss))[:6] + '.h5')
+            # model.save(save_path)
+
+            current_model_loss = self._evaluate_model(model, validation_set)
+            print('epoch:', epoch, ', train_loss:', float(average_loss), ', evaluation_loss:', current_model_loss)
+            if current_model_loss < best_model_loss:
+                best_model_loss = current_model_loss
+                model.save(save_path)
+                # print('best_model_loss:', best_model_loss)
+
+    def _evaluate_model(self, model, validation_set):
+        num_batch = len(validation_set)
+        total_loss = 0
+        for text, mean_xvector, prosody_audio, wavlm_audio in validation_set:
+            prosody_audio_reconstructed, wavlm_audio_reconstructed = model([text, mean_xvector], training=True)
+            loss = self.calculate_loss(prosody_audio, prosody_audio_reconstructed, wavlm_audio, wavlm_audio_reconstructed)
+            total_loss += loss[0]
+        current_model_loss = float(total_loss) / num_batch
+        return current_model_loss
+
+    def train_audio_mimicker(self):
+        participants = os.listdir(controller.train_data_path)
+        for participant in participants:
+            text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix = data_handler.load_text_and_audio_data('train', participant,
+                                                                                                                               'participant_transcript')
+            train_array = [text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix]
+            train_set = data_handler.make_tf_dataset(train_array, batch_size=controller.batch_size, shuffle=True)
+
+            text_matrix, _, prosody_audio_matrix, wavlm_audio_matrix = data_handler.load_text_and_audio_data('validation', participant,
+                                                                                                                                 'participant_transcript')
+            validation_array = [text_matrix, mean_xvector_matrix[0: text_matrix.shape[0], :], prosody_audio_matrix, wavlm_audio_matrix]
+            validation_set = data_handler.make_tf_dataset(validation_array, batch_size=controller.batch_size, shuffle=True)
+
+            text_dim = text_matrix.shape[-1]
+            xvector_dim = mean_xvector_matrix.shape[-1]
+            prosody_dim = prosody_audio_matrix.shape[-1]
+            wavlm_dim = wavlm_audio_matrix.shape[-1]
+
+            vocal_twin_model = VocalTwinModel()
+            model = vocal_twin_model.create_model(text_dim, xvector_dim, prosody_dim, wavlm_dim, hidden_dims=(512, 256), dropout=0.2)
+
+            epochs = 50
+            learning_rate = 0.001
+
+            optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+
+            model_path = os.path.join(controller.model_path, participant)
+            os.makedirs(model_path, exist_ok=True)
+
+            num_batch = len(train_set)
+            best_model_loss = float('inf')
+            for epoch in range(epochs):
+                total_loss = 0
+                average_loss = 0
+                batch_index = 0
+                for text, mean_xvector, prosody_audio, wavlm_audio in train_set:
+                    with tf.GradientTape() as tape:
+                        prosody_audio_reconstructed, wavlm_audio_reconstructed = model([text, mean_xvector], training=True)
+                        loss = self.calculate_loss(prosody_audio, prosody_audio_reconstructed, wavlm_audio, wavlm_audio_reconstructed)
+                    model_gradient = tape.gradient(loss[0], model.trainable_variables)
+                    optimizer.apply_gradients(zip(model_gradient, model.trainable_variables))
+                    batch_index += 1
+
+                    total_loss += loss[0]
+                    average_loss = total_loss / batch_index
+                    # tf.print("EPOCH: ", epoch, '/', epochs, ", BATCH: ", batch_index, '/', num_batch, ', BATCH_LOSS: ', loss, ', EPOCH_LOSS: ', average_loss)
+                    # print('LOSS-> total:', float(loss[1]['total_loss']), 'prosody_loss:', float(loss[1]['prosody_loss']),
+                    #       'wavlm_mse_loss:', float(loss[1]['wavlm_mse_loss']), 'wavlm_cos_loss:', float(loss[1]['wavlm_cos_loss']))
+
+                # save_path = os.path.join(model_path, 'audio_mimicker_epoch_' + str(int(epoch)) + '_loss_' + str(float(average_loss))[:6] + '.h5')
+                # model.save(save_path)
+
+                current_model_loss = self._evaluate_model(model, validation_set)
+                # print('epoch:', epoch, ', train_loss:', float(average_loss), ', evaluation_loss:', current_model_loss)
+                if current_model_loss < best_model_loss:
+                    best_model_loss = current_model_loss
+                    save_path = os.path.join(model_path, 'best_audio_mimicker.h5')
+                    model.save(save_path)
+                    print('best_model_loss:', best_model_loss)
+
+    def train_audio_mimicker_2(self):
+        participants = os.listdir(controller.train_data_path)
+        tr_text_matrix = []
+        tr_mean_xvector_matrix = []
+        tr_prosody_audio_matrix = []
+        tr_wavlm_audio_matrix = []
+        va_text_matrix = []
+        va_mean_xvector_matrix = []
+        va_prosody_audio_matrix = []
+        va_wavlm_audio_matrix = []
+        for participant in participants:
+            text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix = data_handler.load_text_and_audio_data('train', participant,
+                                                                                                                               'participant_transcript')
+            tr_text_matrix.append(text_matrix)
+            tr_mean_xvector_matrix.append(mean_xvector_matrix)
+            tr_prosody_audio_matrix.append(prosody_audio_matrix)
+            tr_wavlm_audio_matrix.append(wavlm_audio_matrix)
+
+            text_matrix, _, prosody_audio_matrix, wavlm_audio_matrix = data_handler.load_text_and_audio_data('validation', participant,
+                                                                                                             'participant_transcript')
+            va_text_matrix.append(text_matrix)
+            va_mean_xvector_matrix.append(mean_xvector_matrix[0:len(text_matrix)])
+            va_prosody_audio_matrix.append(prosody_audio_matrix)
+            va_wavlm_audio_matrix.append(wavlm_audio_matrix)
+
+        text_matrix = np.array([item for sublist in tr_text_matrix for item in sublist])
+        mean_xvector_matrix = np.array([item for sublist in tr_mean_xvector_matrix for item in sublist])
+        prosody_audio_matrix = np.array([item for sublist in tr_prosody_audio_matrix for item in sublist])
+        wavlm_audio_matrix = np.array([item for sublist in tr_wavlm_audio_matrix for item in sublist])
+        train_array = [text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix]
+        train_set = data_handler.make_tf_dataset(train_array, batch_size=controller.batch_size, shuffle=True)
+
+        text_matrix = np.array([item for sublist in va_text_matrix for item in sublist])
+        mean_xvector_matrix = np.array([item for sublist in va_mean_xvector_matrix for item in sublist])
+        prosody_audio_matrix = np.array([item for sublist in va_prosody_audio_matrix for item in sublist])
+        wavlm_audio_matrix = np.array([item for sublist in va_wavlm_audio_matrix for item in sublist])
+        validation_array = [text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix]
+        validation_set = data_handler.make_tf_dataset(validation_array, batch_size=controller.batch_size, shuffle=True)
+
+        text_dim = text_matrix.shape[-1]
+        xvector_dim = mean_xvector_matrix.shape[-1]
+        prosody_dim = prosody_audio_matrix.shape[-1]
+        wavlm_dim = wavlm_audio_matrix.shape[-1]
+
+        vocal_twin_model = VocalTwinModel()
+        model = vocal_twin_model.create_model(text_dim, xvector_dim, prosody_dim, wavlm_dim, hidden_dims=(512, 256), dropout=0.2)
+
+        epochs = 50
+        learning_rate = 0.001
+        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+
+        general_model_path = './temp_model.h5'
+        self._train_step(model, optimizer, epochs, train_set, validation_set, general_model_path) # train general model
+
+        for participant in participants:
+            text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix = data_handler.load_text_and_audio_data('train', participant,
+                                                                                                                               'participant_transcript')
+            train_array = [text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix]
+            train_set = data_handler.make_tf_dataset(train_array, batch_size=controller.batch_size, shuffle=True)
+
+            text_matrix, _, prosody_audio_matrix, wavlm_audio_matrix = data_handler.load_text_and_audio_data('validation', participant,
+                                                                                                             'participant_transcript')
+            validation_array = [text_matrix, mean_xvector_matrix[0: text_matrix.shape[0], :], prosody_audio_matrix, wavlm_audio_matrix]
+            validation_set = data_handler.make_tf_dataset(validation_array, batch_size=controller.batch_size, shuffle=True)
+            
+            model = load_model(general_model_path)
+            model_path = os.path.join(controller.model_path, participant)
+            os.makedirs(model_path, exist_ok=True)
+            save_path = os.path.join(model_path, 'best_audio_mimicker.h5')
+            self._train_step(model, optimizer, epochs, train_set, validation_set, save_path)
+            
+        os.remove(general_model_path)
+
+
+    def validate_audio_mimicker(self):
+        participants = os.listdir(controller.train_data_path)
+        for participant in participants:
+            _, mean_xvector_matrix, _, _ = data_handler.load_text_and_audio_data('train', participant,'participant_transcript')
+            text_matrix, _, prosody_audio_matrix, wavlm_audio_matrix = data_handler.load_text_and_audio_data('validation', participant,
+                                                                                                             'participant_transcript')
+            validation_array = [text_matrix, mean_xvector_matrix[0: text_matrix.shape[0], :], prosody_audio_matrix, wavlm_audio_matrix]
+            validation_set = data_handler.make_tf_dataset(validation_array, batch_size=controller.batch_size, shuffle=True)
+
+            num_batch = len(validation_set)
+
+            models_path = os.path.join(controller.model_path, participant)
+            model_path = os.path.join(models_path, 'best_audio_mimicker.h5')
+            model = load_model(model_path)
+
+            total_loss = 0
+            for text, mean_xvector, prosody_audio, wavlm_audio in validation_set:
+                prosody_audio_reconstructed, wavlm_audio_reconstructed = model([text, mean_xvector], training=False)
+                loss = self.calculate_loss(prosody_audio, prosody_audio_reconstructed, wavlm_audio, wavlm_audio_reconstructed)
+                total_loss += loss[0]
+            print('participant:', participant, '-->  audio mimic loss:', float(total_loss) / num_batch)
+
+    def inference_audio_model(self):
+        respondents = ['simulated_transcript_sft', 'simulated_transcript_raw_gpt']
+        validation_set = controller.validation_data_path
+        participants = os.listdir(validation_set)
+
+        for participant in participants:
+            current_path = os.path.join(validation_set, participant)
+            transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
+            transcripts_path.remove(str(os.path.join(current_path, 'general_info.json')))
+
+            _, mean_xvector_matrix, _, _ = data_handler.load_text_and_audio_data('train', participant, 'participant_transcript')
+            mean_xvector = mean_xvector_matrix[0]
+            mean_xvector = mean_xvector.reshape(1, -1)
+            mean_xvector = tf.convert_to_tensor(mean_xvector)
+
+            model_path = os.path.join(controller.model_path, participant, 'best_audio_mimicker.h5')
+            model = load_model(model_path)
+
+            for transcript_path in tqdm(transcripts_path):
+                with open(transcript_path, 'r') as f:
+                    data = json.load(f)
+
+                for respondent in respondents:
+                    simulated_transcript = data[respondent]
+                    keys = simulated_transcript.keys()
+                    for key in keys:
+                        embedding_text = np.array(simulated_transcript[key]['embedding_text'])[:, 0:2]
+                        sentiment_text = np.array(simulated_transcript[key]['sentiment_text'])[:, 0:2]
+
+                        embedding_text = embedding_text.reshape((-1))
+                        sentiment_text = sentiment_text.reshape((-1))
+
+                        norm = np.linalg.norm(embedding_text) + 1e-8  # L2 norm
+                        embedding_text = embedding_text / norm
+                        norm = np.linalg.norm(sentiment_text) + 1e-8  # L2 norm
+                        sentiment_text = sentiment_text / norm
+                        text = np.concatenate((embedding_text, sentiment_text), axis=0)
+                        text = text.reshape(1, -1)
+                        text = tf.convert_to_tensor(text)
+
+                        prosody_audio_reconstructed, wavlm_audio_reconstructed = model([text, mean_xvector], training=False)
+                        simulated_transcript[key]['prosody_audio'] = prosody_audio_reconstructed.numpy().tolist()
+                        simulated_transcript[key]['wavlm_audio'] = wavlm_audio_reconstructed.numpy().tolist()
+
+                with open(transcript_path, 'w') as f:
+                    json.dump(data, f, indent=4)
+
+
+class VocalTwinModel:
+    def create_model(self, text_dim, xvector_dim, prosody_dim, wavlm_dim, hidden_dims=(512, 256), dropout=0.2):
+        # Inputs
+        text_input = Input(shape=(text_dim,), name='text_input')
+        xvector_input = Input(shape=(xvector_dim,), name='xvector_input')
+
+        # Concatenate text + xvector
+        x = layers.Concatenate(name='text_xvector_concat')([text_input, xvector_input])
+
+        # Hidden layers
+        for i, h in enumerate(hidden_dims):
+            x = layers.Dense(h, activation='relu', name=f'hidden_dense_{i+1}')(x)
+            x = layers.Dropout(dropout, name=f'hidden_dropout_{i+1}')(x)
+
+        # Output heads
+        prosody_output = layers.Dense(prosody_dim, name='prosody_head')(x)
+        wavlm_output = layers.Dense(wavlm_dim, name='wavlm_head')(x)
+
+        # Build model
+        model = Model(
+            inputs=[text_input, xvector_input],
+            outputs=[prosody_output, wavlm_output],
+            name='vocal_twin_net'
+        )
+
+        model.summary()
+        return model
 

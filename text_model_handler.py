@@ -16,18 +16,20 @@ data_handler = DataHandler()
 class TextModelHandler:
     def train_model(self):
         participants = os.listdir(controller.train_data_path)
+        # features = ['embedding_text', 'sentiment_text', 'prosody_audio', 'wavlm_audio']
         features = ['embedding_text', 'sentiment_text']
 
         for participant in participants:
-            train_condition, train_question, train_answer, train_mci = data_handler.load_data(subset='train', features=features, participant=participant,
-                                                                                              respondent='participant_transcript')
-            train_set = data_handler.make_tf_dataset(train_question, train_condition, train_answer, train_mci, batch_size=controller.batch_size, shuffle=True)
+            train_condition, train_question, train_answer, train_mci = data_handler.load_mci_data('train', features, participant,
+                                                                                                           'participant_transcript')
+            train_array = [train_question, train_condition, train_answer, train_mci]
+            train_set = data_handler.make_tf_dataset(train_array, batch_size=controller.batch_size, shuffle=True)
 
-            validation_condition, validation_question, validation_answer, validation_mci = data_handler.load_data(subset='validation', features=features,
-                                                                                                                  participant=participant,
-                                                                                                                  respondent='participant_transcript')
-            validation_set = data_handler.make_tf_dataset(validation_question, validation_condition, validation_answer, validation_mci,
-                                                          batch_size=controller.batch_size, shuffle=True)
+            validation_condition, validation_question, validation_answer, validation_mci = data_handler.load_mci_data('validation', features,
+                                                                                                                               participant, 'participant_transcript')
+            validation_array = [validation_question, validation_condition, validation_answer, validation_mci]
+            validation_set = data_handler.make_tf_dataset(validation_array, batch_size=controller.batch_size, shuffle=True)
+
             input_dim = train_question.shape[1]
             condition_dim = train_condition.shape[1]
             latent_dim = 128
@@ -69,13 +71,13 @@ class TextModelHandler:
                     average_loss = total_loss / batch_index
                     # tf.print("EPOCH: ", epoch, '/', epochs, ", BATCH: ", batch_index, '/', num_batch, ', BATCH_LOSS: ', loss, ', EPOCH_LOSS: ', average_loss)
 
-                save_path = os.path.join(model_path, 'CVAE_epoch_' + str(int(epoch)) + '_loss_' + str(float(average_loss))[:6] + '.h5')
-                model.save(save_path)
+                # save_path = os.path.join(model_path, 'CVAE_epoch_' + str(int(epoch)) + '_loss_' + str(float(average_loss))[:6] + '.h5')
+                # model.save(save_path)
 
                 current_model_loss = self._evaluate_model(model, validation_set)
                 if current_model_loss < best_model_loss:
                     best_model_loss = current_model_loss
-                    save_path = os.path.join(model_path, 'best.h5')
+                    save_path = os.path.join(model_path, 'best_text_based_mci_predictor.h5')
                     model.save(save_path)
                     print('best_model_loss', best_model_loss)
 
@@ -88,13 +90,14 @@ class TextModelHandler:
 
         for participant in participants:
             for respondent in respondents:
-                validation_condition, validation_question, validation_answer, validation_mci = data_handler.load_data(subset, features, participant, respondent)
-                validation_set = data_handler.make_tf_dataset(validation_question, validation_condition, validation_answer,
-                                                              validation_mci, batch_size=controller.batch_size, shuffle=False)
+                validation_condition, validation_question, validation_answer, validation_mci = data_handler.load_mci_data(subset, features,
+                                                                                                                                   participant, respondent)
+                validation_array = [validation_condition, validation_question, validation_answer, validation_mci]
+                validation_set = data_handler.make_tf_dataset(validation_array, batch_size=controller.batch_size, shuffle=False)
                 num_batch = len(validation_set)
 
                 models_path = os.path.join(controller.model_path, participant)
-                model_path = os.path.join(models_path, 'best.h5')
+                model_path = os.path.join(models_path, 'best_text_based_mci_predictor.h5')
                 model = load_model(model_path)
 
                 del validation_condition

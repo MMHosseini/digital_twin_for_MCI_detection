@@ -5,7 +5,6 @@ from jsonl_handler import JsonlHandler
 from text_handler import TextHandler
 from evaluator import Evaluator
 from text_model_handler import TextModelHandler
-from audio_model_handler import AudioModelHandler
 from audio_handler import AudioHandler
 
 persona_fine_tuner = PersonaFineTuner()
@@ -15,7 +14,6 @@ data_handler = DataHandler()
 text_handler = TextHandler()
 evaluator = Evaluator()
 text_model_handler = TextModelHandler()
-audio_model_handler = AudioModelHandler()
 audio_handler = AudioHandler()
 
 
@@ -74,13 +72,20 @@ if __name__ == "__main__":
     if controller.tasks['extract_audio_wavlm'] == 1:
         audio_handler.extract_audio_wavlm()
         
+    if controller.tasks['train_audio_mimicker'] == 1:
+        audio_handler.train_audio_mimicker_2()
+        
+    if controller.tasks['validate_audio_mimicker'] == 1:
+        audio_handler.validate_audio_mimicker()
+        
+    if controller.tasks['inference_audio_model'] == 1:
+        audio_handler.inference_audio_model()
+
     if controller.tasks['audio_based_author_identification'] == 1:
         evaluator.audio_based_author_identification()
 
     if controller.tasks['train_model'] == 1:
         text_model_handler.train_model()
-        audio_model_handler.train_model()
 
     if controller.tasks['validate_model'] == 1:
         text_model_handler.validate_model()
-        audio_model_handler.validate_model()

@@ -284,7 +284,7 @@ class DataHandler:
                     with open(transcript_path, 'w') as f2:
                         json.dump(data, f2, indent=4)
 
-    def load_data(self, subset, features, participant, respondent='participant_transcript'):
+    def load_mci_data(self, subset, features, participant, respondent='participant_transcript'):
         if subset == 'train':
             data_path = controller.train_data_path
         elif subset == 'validation':
@@ -352,7 +352,7 @@ class DataHandler:
                 question_vector = np.array(question_vector)
                 answer_vector = np.array(answer_vector)
 
-                norm = np.linalg.norm(condition_vector)  # L2 norm
+                norm = np.linalg.norm(condition_vector) # L2 norm
                 condition_vector = condition_vector / norm
                 norm = np.linalg.norm(question_vector)  # L2 norm
                 question_vector = question_vector / norm
@@ -370,21 +370,95 @@ class DataHandler:
 
         return condition_matrix, question_matrix, answer_matrix, mci_vector
 
-    def load_data_for_audio_mimic(self):
-        return 0, 0, 0, 0
+    def load_text_and_audio_data(self, subset, participant, respondent='participant_transcript'):
+        if subset == 'train':
+            data_path = controller.train_data_path
+        elif subset == 'validation':
+            data_path = controller.validation_data_path
+        else:
+            print('Error in load_data: You have chosen a wrong subset for loading')
+            return
 
-    def make_tf_dataset(self, question_np, condition_np, answer_np, mci_np, batch_size=32, shuffle=True, seed=42):
-        # Ensure float32 for TF
-        question_np = np.asarray(question_np, dtype=np.float32)
-        condition_np = np.asarray(condition_np, dtype=np.float32)
-        answer_np = np.asarray(answer_np, dtype=np.float32)
-        mci_np = np.asarray(mci_np, dtype=np.float32)
+        current_path = os.path.join(data_path, participant)
+        transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
+        general_info_path = os.path.join(current_path, 'general_info.json')
+        transcripts_path.remove(str(general_info_path))
 
-        ds = tf.data.Dataset.from_tensor_slices((question_np, condition_np, answer_np, mci_np))
+        embedding_text_matrix = list()
+        sentiment_text_matrix = list()
+        prosody_audio_matrix = list()
+        xvector_audio_matrix = list()
+        wavlm_audio_matrix = list()
+        epsilon = 1e-8
+        for transcript_path in tqdm(transcripts_path):
+            with open(transcript_path, "r", encoding="utf-8") as f1:
+                data = json.load(f1)
+
+            respondant_transcript = data[respondent]
+            respondant_transcript_keys = list(respondant_transcript.keys())
+            for respondant_transcript_key in respondant_transcript_keys:
+                try:
+                    embedding_text = np.array(respondant_transcript[respondant_transcript_key]['embedding_text'])[:, 0:2]
+                    sentiment_text = np.array(respondant_transcript[respondant_transcript_key]['sentiment_text'])[:, 0:2]
+                    prosody_audio = np.array(respondant_transcript[respondant_transcript_key]['prosody_audio'])
+                    xvector_audio = np.array(respondant_transcript[respondant_transcript_key]['xvector_audio'])
+                    wavlm_audio = np.array(respondant_transcript[respondant_transcript_key]['wavlm_audio'])
+
+                    embedding_text = embedding_text.reshape((-1))
+                    sentiment_text = sentiment_text.reshape((-1))
+
+                    norm = np.linalg.norm(embedding_text) + epsilon  # L2 norm
+                    embedding_text = embedding_text / norm
+                    norm = np.linalg.norm(sentiment_text) + epsilon
+                    sentiment_text = sentiment_text / norm
+                    norm = np.linalg.norm(prosody_audio) + epsilon
+                    prosody_audio = prosody_audio / norm
+                    norm = np.linalg.norm(xvector_audio) + epsilon
+                    xvector_audio = xvector_audio / norm
+                    norm = np.linalg.norm(wavlm_audio) + epsilon
+                    wavlm_audio = wavlm_audio / norm
+
+                    embedding_text_matrix.append(embedding_text)
+                    sentiment_text_matrix.append(sentiment_text)
+                    prosody_audio_matrix.append(prosody_audio)
+                    xvector_audio_matrix.append(xvector_audio)
+                    wavlm_audio_matrix.append(wavlm_audio)
+                except Exception as e:
+                    print(e)
+
+        embedding_text_matrix = np.array(embedding_text_matrix)
+        sentiment_text_matrix = np.array(sentiment_text_matrix)
+        prosody_audio_matrix = np.array(prosody_audio_matrix)
+        xvector_audio_matrix = np.array(xvector_audio_matrix)
+        wavlm_audio_matrix = np.array(wavlm_audio_matrix)
+
+        text_matrix = np.concatenate((embedding_text_matrix, sentiment_text_matrix), axis=1)
+        mean_xvector_matrix = np.mean(xvector_audio_matrix, axis=0, keepdims=True)
+        mean_xvector_matrix = np.repeat(mean_xvector_matrix, repeats=text_matrix.shape[0], axis=0)
+
+        return text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix
+
+    def make_tf_dataset(self, arrays, batch_size=32, shuffle=True, seed=42, dtype=np.float32):
+        arrays = [np.asarray(arr, dtype=dtype) for arr in arrays]
+        ds = tf.data.Dataset.from_tensor_slices(tuple(arrays))
         if shuffle:
-            ds = ds.shuffle(buffer_size=len(mci_np), seed=seed, reshuffle_each_iteration=True)
+            n = len(arrays[0])
+            ds = ds.shuffle(buffer_size=n, seed=seed, reshuffle_each_iteration=True)
         ds = ds.batch(batch_size, drop_remainder=False).prefetch(tf.data.AUTOTUNE)
         return ds
+
+    # def make_tf_dataset(self, question_np, condition_np, answer_np, mci_np, batch_size=32, shuffle=True, seed=42):
+    #     # Ensure float32 for TF
+    #     question_np = np.asarray(question_np, dtype=np.float32)
+    #     condition_np = np.asarray(condition_np, dtype=np.float32)
+    #     answer_np = np.asarray(answer_np, dtype=np.float32)
+    #     mci_np = np.asarray(mci_np, dtype=np.float32)
+    #
+    #     ds = tf.data.Dataset.from_tensor_slices((question_np, condition_np, answer_np, mci_np))
+    #     if shuffle:
+    #         ds = ds.shuffle(buffer_size=len(mci_np), seed=seed, reshuffle_each_iteration=True)
+    #     ds = ds.batch(batch_size, drop_remainder=False).prefetch(tf.data.AUTOTUNE)
+    #     return ds
 
     def __find_ranges(self, nums):
         if not nums:

@@ -39,7 +39,11 @@ class ControlPanel:
         'extract_audio_prosody': 0,
         'extract_audio_xvector': 0,
         'extract_audio_wavlm': 0,
+        'train_audio_mimicker': 0,
+        'validate_audio_mimicker': 0,
+        'inference_audio_model': 0,
         'audio_based_author_identification': 1,
+
         'train_model': 0, #
         'validate_model': 0, #
     }
