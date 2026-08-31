@@ -4,8 +4,9 @@ from data_handler import DataHandler
 from jsonl_handler import JsonlHandler
 from text_handler import TextHandler
 from evaluator import Evaluator
-from text_model_handler import TextModelHandler
+from mci_handler import MCIHandler
 from audio_handler import AudioHandler
+from plot_handler import PlotHandler
 
 persona_fine_tuner = PersonaFineTuner()
 jsonl_handler = JsonlHandler()
@@ -13,8 +14,9 @@ controller = ControlPanel()
 data_handler = DataHandler()
 text_handler = TextHandler()
 evaluator = Evaluator()
-text_model_handler = TextModelHandler()
+mci_handler = MCIHandler()
 audio_handler = AudioHandler()
+plot_handler = PlotHandler()
 
 
 if __name__ == "__main__":
@@ -84,8 +86,18 @@ if __name__ == "__main__":
     if controller.tasks['audio_based_author_identification'] == 1:
         evaluator.audio_based_author_identification()
 
-    if controller.tasks['train_model'] == 1:
-        text_model_handler.train_model()
+    if controller.tasks['train_cvae_model'] == 1:
+        mci_handler.train_cvae_model()
+        
+    if controller.tasks['validate_cvae_model'] == 1:
+        mci_handler.validate_cvae_model()
 
-    if controller.tasks['validate_model'] == 1:
-        text_model_handler.validate_model()
+    if controller.tasks['report_train_and_validation_loss'] == 1:
+        mci_handler.report_train_and_validation_loss()
+
+    if controller.tasks['check_audio_transcript_feature_correlation'] == 1:
+        data_handler.check_audio_transcript_feature_correlation()
+
+    if controller.tasks['plot_for_paper'] == 1:
+        plot_handler.plot_for_paper()
+

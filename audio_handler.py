@@ -18,9 +18,11 @@ import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras import Model, Input, layers
 from data_handler import DataHandler
+from plot_handler import PlotHandler
 
 controller = ControlPanel()
 data_handler = DataHandler()
+plot_handler = PlotHandler()
 
 class AudioHandler:
     def extract_audio_from_video(self):
@@ -64,6 +66,7 @@ class AudioHandler:
                 for video_path in tqdm(videos_path):
                     video_path = Path(video_path)
                     transcript_path = Path(str(video_path).replace('.mp4', '.json'))
+
                     with open(transcript_path) as f0:
                         data = json.load(f0)
 
@@ -309,7 +312,6 @@ class AudioHandler:
                     except Exception:
                         print(">>>>>>>>>>>>>>>>>>>>>>", transcript_path)
                         continue
-
                     change_happened = False
                     sources = ["moderator_transcript", "participant_transcript"]
                     for source in sources:
@@ -365,9 +367,10 @@ class AudioHandler:
             "wavlm_cos_loss": wavlm_cos_loss,
         }
 
-    def _train_step(self, model, optimizer, epochs, train_set, validation_set, save_path):
+    def _train_step(self, model, optimizer, epochs, train_set, validation_set, save_path, plot_loss=False):
         num_batch = len(train_set)
         best_model_loss = float('inf')
+        loss_trajectory = []
         for epoch in range(epochs):
             total_loss = 0
             average_loss = 0
@@ -382,6 +385,7 @@ class AudioHandler:
 
                 total_loss += loss[0]
                 average_loss = total_loss / batch_index
+                loss_trajectory.append(float(loss[0]))
                 # tf.print("EPOCH: ", epoch, '/', epochs, ", BATCH: ", batch_index, '/', num_batch, ', BATCH_LOSS: ', loss, ', EPOCH_LOSS: ', average_loss)
                 # print('LOSS-> total:', float(loss[1]['total_loss']), 'prosody_loss:', float(loss[1]['prosody_loss']),
                 #       'wavlm_mse_loss:', float(loss[1]['wavlm_mse_loss']), 'wavlm_cos_loss:', float(loss[1]['wavlm_cos_loss']))
@@ -395,6 +399,9 @@ class AudioHandler:
                 best_model_loss = current_model_loss
                 model.save(save_path)
                 # print('best_model_loss:', best_model_loss)
+
+        if plot_loss: # I didn't use it in paper
+            plot_handler.plot_audio_mimicker_loss(loss_trajectory)
 
     def _evaluate_model(self, model, validation_set):
         num_batch = len(validation_set)
@@ -518,7 +525,7 @@ class AudioHandler:
         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
         general_model_path = './temp_model.h5'
-        self._train_step(model, optimizer, epochs, train_set, validation_set, general_model_path) # train general model
+        self._train_step(model, optimizer, epochs, train_set, validation_set, general_model_path, plot_loss=True) # train general model
 
         for participant in participants:
             text_matrix, mean_xvector_matrix, prosody_audio_matrix, wavlm_audio_matrix = data_handler.load_text_and_audio_data('train', participant,
@@ -603,6 +610,8 @@ class AudioHandler:
                         text = tf.convert_to_tensor(text)
 
                         prosody_audio_reconstructed, wavlm_audio_reconstructed = model([text, mean_xvector], training=False)
+                        prosody_audio_reconstructed = tf.squeeze(prosody_audio_reconstructed, axis=0)
+                        wavlm_audio_reconstructed = tf.squeeze(wavlm_audio_reconstructed, axis=0)
                         simulated_transcript[key]['prosody_audio'] = prosody_audio_reconstructed.numpy().tolist()
                         simulated_transcript[key]['wavlm_audio'] = wavlm_audio_reconstructed.numpy().tolist()
 

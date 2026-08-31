@@ -33,24 +33,25 @@ class PersonaFineTuner:
             f.write(dpo_model_name)
 
     def inference_language_model(self): # simulate validation responses by raw GPT-4.1, fine-tuned, dpo, and rag
-        raw_model = "gpt-4.1-mini-2025-04-14"
-        self._inference(model=raw_model, key_name='simulated_transcript_raw_gpt', rag=False)
+        # raw_model = "gpt-4.1-mini-2025-04-14"
+        # self._mimic_language(model=raw_model, key_name='simulated_transcript_raw_gpt', rag=False)
 
         # with open(controller.supervised_fine_tuned_model_name) as f:
         #     sft_model = f.read().strip()
-        # self._inference(model=sft_model, key_name='simulated_transcript_sft', rag=False)
+        # self._mimic_language(model=sft_model, key_name='simulated_transcript_sft', rag=False)
         #
         # with open(controller.supervised_fine_tuned_model_name) as f:
         #     sft_model = f.read().strip()
-        # self._inference(model=sft_model, key_name='simulated_transcript_sft_rag', rag=True)
+        # self._mimic_language(model=sft_model, key_name='simulated_transcript_sft_rag', rag=True)
         #
         # with open(controller.dpo_fine_tuned_model_name) as f:
         #     dpo_model = f.read().strip()
-        # self._inference(model=dpo_model, key_name='simulated_transcript_dpo', rag=False)
+        # self._mimic_language(model=dpo_model, key_name='simulated_transcript_dpo', rag=False)
         #
-        # with open(controller.supervised_fine_tuned_model_name) as f:
+        # with open(controller.dpo_fine_tuned_model_name) as f:
         #     dpo_model = f.read().strip()
-        # self._inference(model=dpo_model, key_name='simulated_transcript_dpo_rag', rag=True)
+        # self._mimic_language(model=dpo_model, key_name='simulated_transcript_dpo_rag', rag=True)
+        pass
 
     # -------------------------
     # TRAINING
@@ -108,14 +109,9 @@ class PersonaFineTuner:
             If True, prints new fine-tuning events while polling.
         '''
         poll_interval_sec = 30
-        timeout_sec = 6 * 60 * 60
         print_events = True
         while True:
-            # if time.time() - start > timeout_sec:
-            #     raise RuntimeError(f"Fine-tuning job {job_id} timed out after {timeout_sec} seconds")
-
             current = self.client.fine_tuning.jobs.retrieve(job_id)
-
             if print_events:
                 try:
                     ev = self.client.fine_tuning.jobs.list_events(job_id)
@@ -162,7 +158,7 @@ class PersonaFineTuner:
         )
         return resp.output_text
 
-    def _inference(self, model, key_name, rag=False):
+    def _mimic_language(self, model, key_name, rag=False):
         system_prompt = (
             "You are simulating the RESPONDENT (participant) from a research dataset. "
             "Your job is to answer as that respondent would.\n\n"
@@ -187,7 +183,7 @@ class PersonaFineTuner:
 
             "If STYLE EXAMPLES are provided, you may reuse their content as well as their phrasing, "
             "as long as the response remains consistent with the respondent’s overall style.\n"
-            
+
             "Anti-repetition rule (high priority):"
             "- Never repeat the same word more than twice consecutively (e.g., \"I I I\" is forbidden)."
             "- If you notice repetition starting, stop and rewrite the sentence once, cleanly."
@@ -197,7 +193,7 @@ class PersonaFineTuner:
         if key_name == 'simulated_transcript_raw_gpt':
             system_prompt = (
                 "You are simulating the RESPONDENT (participant) from a research dataset. "
-                "Your job is to generate irrelevant answer to the question, in a way that the RESPONDENT wouldn't.\n\n"
+                # "Your job is to generate irrelevant answer to the question, in a way that the RESPONDENT wouldn't.\n\n"
 
                 "Primary objective: reproduce the respondent’s response in a different style as faithfully as possible. "
                 "Style includes tone, wording, verbosity, hesitations, pacing, directness, formality, "
@@ -279,6 +275,7 @@ class PersonaFineTuner:
                     generated_response = (resp.output_text.replace("\u2019", "'").replace("\u2018", "'")
                                           .replace("\u201c", '"').replace("\u201d", '"'))
                     new_info = {'text': generated_response}
+                    print(generated_response)
                     response_dict[participant_key] = new_info
 
                 data[key_name] = response_dict

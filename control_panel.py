@@ -30,22 +30,24 @@ class ControlPanel:
         'supervised_fine_tune_language_model': 0, # done
         'dpo_fine_tune_language_model': 0, # done
         'prepare_rag_data': 0, # done
-        'inference_language_model': 0, # done for raw, sft, and dpo (maybe later for rag)
+        'inference_language_model': 0, # done
         'extract_text_embeddings': 0, # redo it later for dpo and rag (only run. Code is ready)
         'extract_text_sentiments': 0, # redo it later for dpo and rag (only run. Code is ready)
         'extract_title_descriptor': 0, # done
-        'text_based_author_identification': 0,
-        'extract_audio_from_video': 0,
-        'extract_audio_prosody': 0,
-        'extract_audio_xvector': 0,
-        'extract_audio_wavlm': 0,
-        'train_audio_mimicker': 0,
-        'validate_audio_mimicker': 0,
-        'inference_audio_model': 0,
-        'audio_based_author_identification': 1,
-
-        'train_model': 0, #
-        'validate_model': 0, #
+        'text_based_author_identification': 0, # done
+        'extract_audio_from_video': 0, # done
+        'extract_audio_prosody': 0, # done
+        'extract_audio_xvector': 0, # done
+        'extract_audio_wavlm': 0, # done
+        'train_audio_mimicker': 0, # done
+        'validate_audio_mimicker': 0, # done
+        'inference_audio_model': 0, # done
+        'audio_based_author_identification': 0, # done
+        'train_cvae_model': 0, #
+        'validate_cvae_model': 0,  #
+        'report_train_and_validation_loss': 0, #
+        'check_audio_transcript_feature_correlation': 0,
+        'plot_for_paper': 1,
     }
 
     batch_size = 200

@@ -10,7 +10,6 @@ from sklearn.metrics.cluster import contingency_matrix
 from transformers import AutoTokenizer, AutoModel
 import numpy as np
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
 import nltk
 from tqdm import tqdm
 from collections import Counter

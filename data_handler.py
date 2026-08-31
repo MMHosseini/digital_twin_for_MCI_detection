@@ -8,6 +8,7 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import tensorflow as tf
+from sklearn.cross_decomposition import CCA
 from control_panel import ControlPanel
 
 controller = ControlPanel()
@@ -319,7 +320,7 @@ class DataHandler:
                 condition_vector.append(np.random.randint(0, 365))
                 condition_vector.append(np.random.randint(0, 2))
                 condition_vector.append(data['topic_descriptor'])
-                mci_score = np.random.randint(15, 31) / 30
+                mci_score = np.random.randint(19, 31) / 30 # from mean existence to max possible value
             else:
                 condition_vector.append(data['mci_info']['participant_label'])
                 condition_vector.append(data['mci_info']['interview_period_index'])
@@ -331,44 +332,137 @@ class DataHandler:
                 mci_score = data['mci_info']['interview_time_mci_score'] / 30
 
             condition_vector = sum(([x] if not isinstance(x, list) else x for x in condition_vector), [])
-            condition_vector = list(np.random.rand(len(condition_vector)))
+            # condition_vector = list(np.random.rand(len(condition_vector))) # to test the role of condition
 
             moderator_transcript_keys = list(moderator_transcript.keys())
             respondant_transcript_keys = list(respondant_transcript.keys())
             for i in range(len(moderator_transcript_keys)):
-                moderator_transcript_key = moderator_transcript_keys[i]
-                respondant_transcript_key = respondant_transcript_keys[i]
-                question_vector = list()
-                answer_vector = list()
-                for feature in features:
-                    question = np.array(moderator_transcript[moderator_transcript_key][feature])
-                    answer = np.array(respondant_transcript[respondant_transcript_key][feature])
-                    question_vector.append(list(question[:, 0:2].reshape(-1))) # [:, 0]: mean, [:, 1]: std, [:, 2]: all_together
-                    answer_vector.append(list(answer[:, 0:2].reshape(-1)))
-                question_vector = sum(([x] if not isinstance(x, list) else x for x in question_vector), [])
-                answer_vector = sum(([x] if not isinstance(x, list) else x for x in answer_vector), [])
+                try:
+                    moderator_transcript_key = moderator_transcript_keys[i]
+                    respondant_transcript_key = respondant_transcript_keys[i]
+                    question_vector = list()
+                    answer_vector = list()
+                    question = np.array(moderator_transcript[moderator_transcript_key]['embedding_text'])
+                    question_vector.append(list(question[:, 0:2].reshape(-1)))
 
-                condition_vector = np.array(condition_vector)
-                question_vector = np.array(question_vector)
-                answer_vector = np.array(answer_vector)
+                    for feature in features:
+                        answer = np.array(respondant_transcript[respondant_transcript_key][feature])
+                        if feature in ['embedding_text', 'sentiment_text']:
+                            answer = answer[:, 0:2].reshape(-1)
+                        answer_vector.append(list(answer))
+                    question_vector = sum(([x] if not isinstance(x, list) else x for x in question_vector), [])
+                    answer_vector = sum(([x] if not isinstance(x, list) else x for x in answer_vector), [])
 
-                norm = np.linalg.norm(condition_vector) # L2 norm
-                condition_vector = condition_vector / norm
-                norm = np.linalg.norm(question_vector)  # L2 norm
-                question_vector = question_vector / norm
-                norm = np.linalg.norm(answer_vector)  # L2 norm
-                answer_vector = answer_vector / norm
+                    condition_vector = np.array(condition_vector)
+                    question_vector = np.array(question_vector)
+                    answer_vector = np.array(answer_vector)
 
-                condition_matrix.append(condition_vector)
-                question_matrix.append(question_vector)
-                answer_matrix.append(answer_vector)
-                mci_vector.append(mci_score)
+                    norm = np.linalg.norm(condition_vector) # L2 norm
+                    condition_vector = condition_vector / norm
+                    norm = np.linalg.norm(question_vector)  # L2 norm
+                    question_vector = question_vector / norm
+                    norm = np.linalg.norm(answer_vector)  # L2 norm
+                    answer_vector = answer_vector / norm
+
+                    condition_matrix.append(condition_vector)
+                    question_matrix.append(question_vector)
+                    answer_matrix.append(answer_vector)
+                    mci_vector.append([mci_score])
+                except Exception as e:
+                    print('Error on loading:\n', transcript_path, '--> key', respondant_transcript_keys[i], '-->', e)
+
         condition_matrix = np.array(condition_matrix)
         question_matrix = np.array(question_matrix)
         answer_matrix = np.array(answer_matrix)
         mci_vector = np.array(mci_vector)
 
         return condition_matrix, question_matrix, answer_matrix, mci_vector
+
+    # def load_mci_data(self, subset, features, participant, respondent='participant_transcript'):
+    #     if subset == 'train':
+    #         data_path = controller.train_data_path
+    #     elif subset == 'validation':
+    #         data_path = controller.validation_data_path
+    #     else:
+    #         print('Error in load_data: You have chosen a wrong subset for loading')
+    #         return
+    #
+    #     condition_matrix = list()
+    #     question_matrix = list()
+    #     answer_matrix = list()
+    #     mci_vector = list()
+    #
+    #     current_path = os.path.join(data_path, participant)
+    #     transcripts_path = [str(p) for p in Path(current_path).glob("*.json")]
+    #     general_info_path = os.path.join(current_path, 'general_info.json')
+    #     transcripts_path.remove(str(general_info_path))
+    #
+    #     for transcript_path in tqdm(transcripts_path):
+    #         with open(transcript_path, "r", encoding="utf-8") as f1:
+    #             data = json.load(f1)
+    #
+    #         moderator_transcript = data['moderator_transcript']
+    #         respondant_transcript = data[respondent]
+    #
+    #         condition_vector = list()
+    #         if respondent == 'simulated_transcript_raw_gpt':
+    #             condition_vector.append(np.random.randint(5, 10))
+    #             condition_vector.append(np.random.randint(0, 2))
+    #             condition_vector.append(1 + np.random.uniform(0, 0.02))
+    #             condition_vector.append(np.random.randint(20, 31))
+    #             condition_vector.append(np.random.randint(0, 365))
+    #             condition_vector.append(np.random.randint(0, 2))
+    #             condition_vector.append(data['topic_descriptor'])
+    #             mci_score = np.random.randint(15, 31) / 30
+    #         else:
+    #             condition_vector.append(data['mci_info']['participant_label'])
+    #             condition_vector.append(data['mci_info']['interview_period_index'])
+    #             condition_vector.append(data['mci_info']['age_at_interview'] / data['mci_info']['age_at_start'])
+    #             condition_vector.append(data['mci_info']['last_reported_mci_score'])
+    #             condition_vector.append(data['mci_info']['past_days_from_last_mci_evaluation'])
+    #             condition_vector.append(data['mci_info']['last_cognitive_status'])
+    #             condition_vector.append(data['topic_descriptor'])
+    #             mci_score = data['mci_info']['interview_time_mci_score'] / 30
+    #
+    #         condition_vector = sum(([x] if not isinstance(x, list) else x for x in condition_vector), [])
+    #         # condition_vector = list(np.random.rand(len(condition_vector))) # to test the role of condition
+    #
+    #         moderator_transcript_keys = list(moderator_transcript.keys())
+    #         respondant_transcript_keys = list(respondant_transcript.keys())
+    #         for i in range(len(moderator_transcript_keys)):
+    #             moderator_transcript_key = moderator_transcript_keys[i]
+    #             respondant_transcript_key = respondant_transcript_keys[i]
+    #             question_vector = list()
+    #             answer_vector = list()
+    #             for feature in features:
+    #                 question = np.array(moderator_transcript[moderator_transcript_key][feature])
+    #                 answer = np.array(respondant_transcript[respondant_transcript_key][feature])
+    #                 question_vector.append(list(question[:, 0:2].reshape(-1))) # [:, 0]: mean, [:, 1]: std, [:, 2]: all_together
+    #                 answer_vector.append(list(answer[:, 0:2].reshape(-1)))
+    #             question_vector = sum(([x] if not isinstance(x, list) else x for x in question_vector), [])
+    #             answer_vector = sum(([x] if not isinstance(x, list) else x for x in answer_vector), [])
+    #
+    #             condition_vector = np.array(condition_vector)
+    #             question_vector = np.array(question_vector)
+    #             answer_vector = np.array(answer_vector)
+    #
+    #             norm = np.linalg.norm(condition_vector) # L2 norm
+    #             condition_vector = condition_vector / norm
+    #             norm = np.linalg.norm(question_vector)  # L2 norm
+    #             question_vector = question_vector / norm
+    #             norm = np.linalg.norm(answer_vector)  # L2 norm
+    #             answer_vector = answer_vector / norm
+    #
+    #             condition_matrix.append(condition_vector)
+    #             question_matrix.append(question_vector)
+    #             answer_matrix.append(answer_vector)
+    #             mci_vector.append(mci_score)
+    #     condition_matrix = np.array(condition_matrix)
+    #     question_matrix = np.array(question_matrix)
+    #     answer_matrix = np.array(answer_matrix)
+    #     mci_vector = np.array(mci_vector)
+    #
+    #     return condition_matrix, question_matrix, answer_matrix, mci_vector
 
     def load_text_and_audio_data(self, subset, participant, respondent='participant_transcript'):
         if subset == 'train':
@@ -459,6 +553,16 @@ class DataHandler:
     #         ds = ds.shuffle(buffer_size=len(mci_np), seed=seed, reshuffle_each_iteration=True)
     #     ds = ds.batch(batch_size, drop_remainder=False).prefetch(tf.data.AUTOTUNE)
     #     return ds
+
+    def check_audio_transcript_feature_correlation(self):
+        participants = os.listdir(controller.train_data_path)
+        for participant in participants:
+            _, _, textual_data, _ = self.load_mci_data('train', ['embedding_text', 'sentiment_text'], participant, 'participant_transcript')
+            _, _, acoustic_data, _ = self.load_mci_data('train', ['prosody_audio', 'wavlm_audio'], participant, 'participant_transcript')
+            cca = CCA(n_components=1)
+            textual, acoustic = cca.fit_transform(textual_data, acoustic_data)
+            corr = np.corrcoef(textual.T, acoustic.T)[0, 1]
+            print(f"For participant {participant} CCA correlation: {corr}")
 
     def __find_ranges(self, nums):
         if not nums:
